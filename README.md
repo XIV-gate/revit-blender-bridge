@@ -1,5 +1,7 @@
 # AGR Revit Bridge
 
+**Обновление старых установок:** если подключение/обновитель сообщает про DLL вне runtime или прежняя DLL удалена после переустановки, используйте [ZIP 0.3.2 Early Access](https://github.com/XIV-gate/revit-blender-bridge/releases/download/v0.3.2/agr_revit_bridge-0.3.2.zip). В нём исправлены восстановление собственной регистрации и загрузка новой панели без перезапуска Blender. Ручная правка .addin не нужна. Уже заблокированный старый обновитель требует разовой установки нового ZIP. Стабильный канал остаётся 0.3.0.
+
 Version 0.3.0, developed by XIVgate. Import selected Revit geometry from Blender: choose an RVT, scan categories/worksets/elements, and import or reimport with shared prototypes and materials. The panel is alongside AGR Prepare, AGR Output and AGR Collision in the **AGR** sidebar tab.
 
 [Download the latest release](https://github.com/XIV-gate/revit-blender-bridge/releases/latest).
