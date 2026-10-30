@@ -171,6 +171,7 @@ def begin_scan(scene, *, auto_import=False):
     STATE.auto_import = auto_import
     from .spatial_preview import clear_preview
     clear_preview(scene)
+    props.tree_rows.clear()
     props.elements.clear()
     props.categories.clear()
     props.worksets.clear()

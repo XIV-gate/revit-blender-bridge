@@ -36,7 +36,7 @@ class RBB_OT_choose_revit(bpy.types.Operator):
         found = discover()
         _REVIT_ITEMS = [(row['path'], f"Revit {row['year']} · {row['version']}", row['path']) for row in found]
         if not found:
-            self.report({'INFO'}, 'Установки не найдены. Укажите путь Revit.exe вручную в основной панели.')
+            self.report({'INFO'}, 'Установки не найдены. Укажите путь Revit.exe вручную в настройках подключения.')
             return {'CANCELLED'}
         current = bpy.path.abspath(context.scene.xivgate_revit_bridge.revit_exe)
         self.installation = next((row['path'] for row in found if row['path'] == current), found[0]['path'])
@@ -44,10 +44,9 @@ class RBB_OT_choose_revit(bpy.types.Operator):
 
     def draw(self, context):
         self.layout.prop(self, 'installation')
-        for line in textwrap.wrap(self.installation, 90):
-            self.layout.label(text=line)
+        self.layout.label(text=self.installation)
         self.layout.label(text='Будет запущена только выбранная версия Revit.')
-        self.layout.label(text='Для других установок используйте ручной путь в основной панели.')
+        self.layout.label(text='Для других установок используйте ручной путь в настройках подключения.')
 
     def execute(self, context):
         props = context.scene.xivgate_revit_bridge
@@ -90,6 +89,44 @@ def _props(item):
     return item.id_data.xivgate_revit_bridge
 
 
+def rebuild_tree(props):
+    from .core.catalog_tree import build_tree
+    identity = None
+    if 0 <= props.tree_index < len(props.tree_rows):
+        old = props.tree_rows[props.tree_index]
+        identity = (old.kind, old.item_index)
+    rows = build_tree(props.categories, props.elements, props.search)
+    if [(row.kind, row.item_index) for row in props.tree_rows] == rows:
+        return
+    props.tree_rows.clear()
+    for kind, index in rows:
+        row = props.tree_rows.add()
+        row.kind, row.item_index = kind, index
+    props.tree_index = rows.index(identity) if identity in rows else 0
+
+
+def expansion_changed(item, context):
+    if not _SYNCING:
+        rebuild_tree(_props(item))
+
+
+def tree_search_changed(props, context):
+    global _SYNCING
+    if _SYNCING:
+        return
+    if props.search.strip():
+        from .core.catalog_tree import build_tree
+        visible = build_tree(props.categories, props.elements, props.search)
+        _SYNCING = True
+        try:
+            for kind, index in visible:
+                if kind == 'category':
+                    props.categories[index].expanded = True
+        finally:
+            _SYNCING = False
+    rebuild_tree(props)
+
+
 def sync_groups(props):
     global _SYNCING
     previous = _SYNCING
@@ -108,6 +145,7 @@ def sync_groups(props):
         props.selected_count = sum(item.selected for item in props.elements)
     finally:
         _SYNCING = previous
+    rebuild_tree(props)
 
 
 def element_changed(item, context):
@@ -154,6 +192,12 @@ class RBB_Group(bpy.types.PropertyGroup):
     count: IntProperty()
     selected_count: IntProperty()
     selected: BoolProperty(update=group_changed)
+    expanded: BoolProperty(name='Раскрыть категорию', description='Показать или скрыть элементы этой категории', update=expansion_changed)
+
+
+class RBB_TreeRow(bpy.types.PropertyGroup):
+    kind: StringProperty()
+    item_index: IntProperty()
 
 
 class RBB_Warning(bpy.types.PropertyGroup):
@@ -175,7 +219,7 @@ class RBB_Settings(bpy.types.PropertyGroup):
     release_version: EnumProperty(name='Версия', items=release_items, update=release_changed, options={'SKIP_SAVE'})
     source_rvt: StringProperty(name='Файл RVT', subtype='FILE_PATH')
     revit_exe: StringProperty(name='Revit.exe', subtype='FILE_PATH', default=_default_revit())
-    cache_directory: StringProperty(name='Рабочая папка', subtype='DIR_PATH', description='Папка для рабочей копии RVT, геометрии и журналов')
+    cache_directory: StringProperty(name='Рабочая папка', subtype='DIR_PATH', description='Необязательно. Если пусто — Data/Cache/RevitBridge рядом с текущим сохранённым .blend; своего пути по умолчанию в аддоне нет')
     reuse_export_cache: BoolProperty(name='Использовать проверенный кэш выгрузки', default=True)
     catalog_worker_key: StringProperty()
     addin_folder: StringProperty(name='Каталог подключения Revit', subtype='DIR_PATH', description='Обычно определяется автоматически; нужен только при нестандартной установке')
@@ -191,7 +235,9 @@ class RBB_Settings(bpy.types.PropertyGroup):
         ('worksets', 'Рабочие наборы', 'Группировать элементы по рабочим наборам Revit'),
         ('types', 'Типы', 'Группировать по семейству и типу; один тип можно включить целиком'),
         ('elements', 'Объекты', 'Выбирать отдельные элементы и видеть причину рекомендации')])
-    search: StringProperty(name='Поиск', options={'TEXTEDIT_UPDATE'})
+    search: StringProperty(name='Поиск', options={'TEXTEDIT_UPDATE'}, update=tree_search_changed)
+    tree_rows: CollectionProperty(type=RBB_TreeRow)
+    tree_index: IntProperty()
     selection_filter: EnumProperty(name='Состав списка', items=[('all', 'Все', ''),
         ('selected', 'Выбранные', 'Фактически отмеченные для импорта'),
         ('excluded', 'Исключённые', 'Не отмеченные для импорта; можно включить вручную')])
@@ -249,6 +295,67 @@ class RBB_OT_warnings(bpy.types.Operator):
             for line in textwrap.wrap(props.warnings[props.warning_index].message, width=100):
                 self.layout.label(text=line)
             self.layout.operator('xivgate_rbb.copy_report_details', text='Копировать подробности выбранной записи', icon='COPYDOWN')
+
+    def execute(self, context):
+        return {'FINISHED'}
+
+
+class RBB_UL_catalog_tree(bpy.types.UIList):
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        row = layout.row(align=True)
+        if item.kind == 'category' and 0 <= item.item_index < len(data.categories):
+            group = data.categories[item.item_index]
+            row.prop(group, 'expanded', text='', emboss=False,
+                     icon='TRIA_DOWN' if group.expanded else 'TRIA_RIGHT')
+            state = group_state(group.selected_count, group.count)
+            toggle = row.operator('xivgate_rbb.toggle_group', text='', emboss=False,
+                                  icon={'all': 'CHECKBOX_HLT', 'partial': 'REMOVE', 'none': 'CHECKBOX_DEHLT'}[state])
+            toggle.kind, toggle.group_id = 'category', group.group_id
+            row.label(text=group.name)
+            row.label(text=f'{group.selected_count}/{group.count}')
+            preview_button(row, data, 'category', group.group_id, group.name)
+        elif item.kind == 'element' and 0 <= item.item_index < len(data.elements):
+            element = data.elements[item.item_index]
+            row.label(text='', icon='BLANK1')
+            row.prop(element, 'selected', text='')
+            info = row.operator('xivgate_rbb.element_info', text=element.name or element.type_name or element.element_id,
+                                emboss=False)
+            info.element_index = item.item_index
+            preview_button(row, data, 'element', element.element_id, element.name or element.element_id)
+
+
+class RBB_OT_element_info(bpy.types.Operator):
+    bl_idname = 'xivgate_rbb.element_info'
+    bl_label = 'Элемент Revit'
+    bl_description = 'Показать тип, рабочий набор и причину рекомендации для этого элемента'
+    element_index: IntProperty()
+
+    @classmethod
+    def description(cls, context, properties):
+        props = context.scene.xivgate_revit_bridge if context and context.scene else None
+        if props is not None and 0 <= properties.element_index < len(props.elements):
+            item = props.elements[properties.element_index]
+            return f'{item.type_name or item.name} · ID {item.element_id} · {item.reason}'
+        return cls.bl_description
+
+    def invoke(self, context, event):
+        if not 0 <= self.element_index < len(context.scene.xivgate_revit_bridge.elements):
+            return {'CANCELLED'}
+        return context.window_manager.invoke_props_dialog(self, width=700)
+
+    def draw(self, context):
+        props = context.scene.xivgate_revit_bridge
+        if not 0 <= self.element_index < len(props.elements):
+            return
+        item = props.elements[self.element_index]
+        values = (item.name, 'ID: ' + item.element_id, item.type_name,
+                  'Рабочий набор: ' + item.workset_name,
+                  'Выбран для импорта: ' + ('да' if item.selected else 'нет'),
+                  'Рекомендация: ' + {'include': 'включить', 'exclude': 'исключить', 'review': 'проверить'}.get(item.recommendation, 'проверить'),
+                  item.reason)
+        for value in values:
+            for line in textwrap.wrap(value, 90):
+                self.layout.label(text=line)
 
     def execute(self, context):
         return {'FINISHED'}
@@ -325,6 +432,8 @@ class RBB_OT_toggle_group(bpy.types.Operator):
 
 
 class RBB_OT_inspect_group(bpy.types.Operator):
+    # Retained for saved 0.4.x operator references; the panel uses only the tree.
+    bl_options = {'INTERNAL'}
     bl_idname = 'xivgate_rbb.inspect_group'
     bl_label = 'Показать исключённые'
     bl_description = 'Открыть элементы этой группы с объяснением рекомендации; галочки задаёт пользователь'
@@ -345,6 +454,7 @@ class RBB_OT_inspect_group(bpy.types.Operator):
 
 
 class RBB_OT_clear_scope(bpy.types.Operator):
+    bl_options = {'INTERNAL'}
     bl_idname = 'xivgate_rbb.clear_scope'
     bl_label = 'Показать все группы'
     bl_description = 'Сбросить ограничение текущей группой, поиск и фильтр списка; выбранные галочки сохраняются'
@@ -407,8 +517,7 @@ class RBB_OT_setup(bpy.types.Operator):
     def draw(self, context):
         layout = self.layout
         layout.label(text='Будет подключён обработчик Revit через файл:')
-        for line in textwrap.wrap(self.plan['path'], 80):
-            layout.label(text=line)
+        layout.label(text=self.plan['path'])
         layout.label(text='Текущий открытый Revit не изменяется. DLL работает только в процессе плагина.')
 
     def execute(self, context):
@@ -439,11 +548,9 @@ class RBB_OT_scan(bpy.types.Operator):
 
     def draw(self, context):
         self.layout.label(text='Подключение локального обработчика Revit:')
-        for line in textwrap.wrap(self.plan['path'], 90):
-            self.layout.label(text=line)
+        self.layout.label(text=self.plan['path'])
         self.layout.label(text='Копия RVT и промежуточные данные:')
-        for line in textwrap.wrap(self.cache, 90):
-            self.layout.label(text=line)
+        self.layout.label(text=self.cache)
         self.layout.label(text='Revit может один раз запросить доверие к надстройке.', icon='INFO')
 
     def execute(self, context):
@@ -555,8 +662,7 @@ class RBB_OT_cache(bpy.types.Operator):
 
     def draw(self, context):
         self.layout.label(text=f"Завершённых заданий: {self.info['eligible_jobs']}; {self.info['eligible_bytes'] / 1024**2:.1f} МБ")
-        for line in textwrap.wrap(self.info['root'], 85):
-            self.layout.label(text=line)
+        self.layout.label(text=self.info['root'])
         self.layout.label(text='Для следующего импорта может потребоваться новая выгрузка.')
         self.layout.label(text='Активные и неизвестные каталоги сохраняются.')
         self.layout.label(text='Файлы, используемые текущими сценами, тоже сохраняются.')
@@ -751,13 +857,10 @@ def draw_settings(layout, props):
 
     storage = layout.box()
     storage.label(text='Рабочие данные', icon='FILE_FOLDER')
-    storage.prop(props, 'cache_directory', text='Рабочая папка (пусто — автоматически)')
+    storage.prop(props, 'cache_directory', text='Своя папка')
+    if not props.cache_directory:
+        storage.label(text='Авто: рядом с .blend' if bpy.data.filepath else 'Авто: сначала сохраните .blend')
     storage.prop(props, 'reuse_export_cache')
-    try:
-        for line in textwrap.wrap('Папка: ' + str(workflow.cache_root(props)), width=48):
-            storage.label(text=line)
-    except ValueError:
-        storage.label(text='Сохраните .blend или укажите рабочую папку', icon='INFO')
     storage.operator('xivgate_rbb.clear_cache', icon='TRASH')
 
 
@@ -788,64 +891,13 @@ class RBB_PT_panel(bpy.types.Panel):
         if props.elements:
             selection = layout.column()
             selection.enabled = not props.busy and not runtime.MAINTENANCE
-            selection.prop(props, 'list_mode', expand=True)
             selection.prop(props, 'search', text='', icon='VIEWZOOM')
-            selection.label(text='Галочки задают импорт; рекомендации можно менять.', icon='INFO')
-            if props.list_mode == 'categories':
-                selection.template_list('RBB_UL_groups', 'categories', props, 'categories', props, 'category_index', rows=8)
-            elif props.list_mode == 'worksets':
-                selection.template_list('RBB_UL_groups', 'worksets', props, 'worksets', props, 'workset_index', rows=8)
-            elif props.list_mode == 'types':
-                selection.template_list('RBB_UL_groups', 'types', props, 'types', props, 'type_index', rows=8)
-            else:
-                if props.scope_kind:
-                    scope = selection.row(align=True)
-                    scope.label(text='Группа: ' + props.scope_label)
-                    scope.operator('xivgate_rbb.clear_scope', text='', icon='X')
-                selection.prop(props, 'selection_filter', expand=True)
-                selection.template_list('RBB_UL_elements', '', props, 'elements', props, 'element_index', rows=8)
-                if 0 <= props.element_index < len(props.elements):
-                    item = props.elements[props.element_index]
-                    if matches(item, query=props.search, scope_kind=props.scope_kind,
-                               scope_id=props.scope_id, status=props.selection_filter):
-                        selection.label(text='В выборке: ' + ('да' if item.selected else 'нет'))
-                        recommendation = {'include': 'включить', 'exclude': 'исключить', 'review': 'проверить'}.get(item.recommendation, 'проверить')
-                        selection.label(text='Рекомендация: ' + recommendation)
-                        selection.label(text='ID: ' + item.element_id + ' · ' + item.workset_name)
-                        for line in textwrap.wrap(item.type_name or item.name, 48):
-                            selection.label(text=line)
-                        for line in textwrap.wrap(item.reason or 'Причина рекомендации не указана', 48):
-                            selection.label(text=line)
-                row = selection.row(align=True)
-                for mode, label in (('all', 'Выбрать показанные'), ('none', 'Снять показанные')):
-                    action = row.operator('xivgate_rbb.select', text=label)
-                    action.mode, action.scope = mode, 'visible'
-            group = active_group(props)
-            if group is not None:
-                summary = selection.box()
-                summary.label(text=group.name)
-                summary.label(text=f'Выбрано {group.selected_count} из {group.count}; исключено {group.count - group.selected_count}')
-                rows = [item for item in props.elements if getattr(item, group.group_kind + '_id') == group.group_id]
-                reasons = exclusion_summary(rows)
-                for reason, count in reasons[:4]:
-                    for line in textwrap.wrap(f'{count} — {reason}', 48):
-                        summary.label(text=line)
-                if len(reasons) > 4:
-                    summary.label(text=f'Ещё причин: {len(reasons) - 4}; откройте исключённые')
-                row = summary.row(align=True)
-                row.operator('xivgate_rbb.inspect_group', text='Показать исключённые', icon='VIEWZOOM')
-                row.operator('xivgate_rbb.inspect_group', text='Все в группе').excluded_only = False
-                row = summary.row(align=True)
-                for mode, label in (('all', 'Выбрать всю группу'), ('none', 'Снять всю группу')):
-                    action = row.operator('xivgate_rbb.select', text=label)
-                    action.mode, action.scope = mode, 'group'
-            selection.label(text='Выбор во всей модели:')
+            selection.template_list('RBB_UL_catalog_tree', '', props, 'tree_rows', props, 'tree_index', rows=10)
             row = selection.row(align=True)
             for mode, label in (('all', 'Все'), ('none', 'Ничего'), ('recommended', 'Рекомендуемые')):
                 action = row.operator('xivgate_rbb.select', text=label)
                 action.mode, action.scope = mode, 'model'
-            selection.label(text=f'Отмечено для импорта: {props.selected_count} из {len(props.elements)}')
-            selection.label(text='Это выбор, не число полученных мешей.')
+            selection.label(text=f'Выбрано: {props.selected_count} / {len(props.elements)}')
         settings = layout.column()
         settings.enabled = not props.busy and not runtime.MAINTENANCE
         settings.prop(props, 'show_advanced', icon='TRIA_DOWN' if props.show_advanced else 'TRIA_RIGHT', emboss=False)
@@ -890,7 +942,26 @@ def _load_pre(*args):
     runtime.cleanup()
 
 
-CLASSES = (RBB_Element, RBB_Group, RBB_Warning, RBB_Settings, RBB_UL_groups, RBB_UL_elements, RBB_UL_warnings, RBB_OT_warnings,
+@persistent
+def _load_post(*args):
+    for scene in bpy.data.scenes:
+        if scene.library is not None:
+            continue
+        sync_groups(scene.xivgate_revit_bridge)
+
+
+def _initialize_tree():
+    # addon_utils.enable restricts bpy.data during register; restore scene data
+    # on the next Blender event after that restriction has been lifted.
+    if not getattr(RBB_Settings, 'is_registered', False):
+        return None
+    if not hasattr(bpy.data, 'scenes'):
+        return .1
+    _load_post()
+    return None
+
+
+CLASSES = (RBB_Element, RBB_Group, RBB_TreeRow, RBB_Warning, RBB_Settings, RBB_UL_catalog_tree, RBB_OT_element_info, RBB_UL_groups, RBB_UL_elements, RBB_UL_warnings, RBB_OT_warnings,
            RBB_OT_choose_revit,
            RBB_OT_toggle_group, RBB_OT_inspect_group, RBB_OT_clear_scope, RBB_OT_copy_report_details, RBB_OT_readable_names,
            RBB_OT_setup, RBB_OT_scan, RBB_OT_import, RBB_OT_select, RBB_OT_cancel,
@@ -903,13 +974,23 @@ def register():
     bpy.types.Scene.xivgate_revit_bridge = PointerProperty(type=RBB_Settings)
     if _load_pre not in bpy.app.handlers.load_pre:
         bpy.app.handlers.load_pre.append(_load_pre)
+    if _load_post not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(_load_post)
+    if hasattr(bpy.data, 'scenes'):
+        _load_post()
+    elif not bpy.app.timers.is_registered(_initialize_tree):
+        bpy.app.timers.register(_initialize_tree, first_interval=.1)
 
 
 def unregister():
+    if bpy.app.timers.is_registered(_initialize_tree):
+        bpy.app.timers.unregister(_initialize_tree)
     updater.cleanup()
     runtime.cleanup()
     if _load_pre in bpy.app.handlers.load_pre:
         bpy.app.handlers.load_pre.remove(_load_pre)
+    if _load_post in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(_load_post)
     del bpy.types.Scene.xivgate_revit_bridge
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)

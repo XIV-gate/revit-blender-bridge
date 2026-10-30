@@ -20,6 +20,8 @@ addon_utils.modules_refresh()
 module = addon_utils.enable('xivgate_revit_bridge', default_set=False, persistent=False)
 assert module is not None
 assert hasattr(bpy.context.scene, 'xivgate_revit_bridge')
+if hasattr(module.ui, '_initialize_tree'):
+    assert module.ui._initialize_tree() is None
 from xivgate_revit_bridge.runtime import worker_path
 assert worker_path().is_file()
 with patch.object(module.ui.workflow, 'prepare_settings', return_value=root), \

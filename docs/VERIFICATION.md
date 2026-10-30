@@ -199,3 +199,20 @@ assembly version changed in C#.
 - Six worker variants rebuilt, assembly version0.4.1.0; known net10 baseline
   CS1701 API unification caveats unchanged. No new live RVT run for a layout change.
 - ZIP SHA256:58d95f7071e85ce1f2182f5522d809a00e2933cc5469daaaea7b797d2de3e788.
+
+
+## Early Access 0.4.2 — category tree
+
+- 104 ordinary Python tests passed (one Windows symlink privilege skip).
+- Actual Blender4.2.14/5.2.3: category expansion and canonical element checkboxes,
+  search without selection changes, fixed outer panel trace when switching the
+  active category, no inline reasons/boilerplate, layer/element preview payloads.
+- Actual linked Scene fixture verified: load handler skips read-only library scenes.
+- Cold ZIP enable respects Blender RestrictData and defers tree restoration; final
+  package installation+scan invoke passed on both hosts. Real ZIP0.4.1->0.4.2->0.4.1
+  and updater rollback/file-load tests passed on both hosts. No Preferences saves.
+- Full workflow/controller/converter/delta/cache regression passed on Blender5.2.3.
+  Export algorithms unchanged; no new live RVT run.
+- All six workers rebuilt; final ZIP verified. Every ZIP payload scanned for the
+  personal username and Desktop/TEST path in ASCII/UTF-16LE: no matches.
+- ZIP SHA256:dd4df07e8554ae44bf86c2085c210ccdca658f696d8da74f467dc34b739f6b5e.
