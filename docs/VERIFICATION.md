@@ -120,3 +120,23 @@ upgrade/explicit downgrade/failed-code rollback. All processes use isolated prof
 Real user export12108 placements/5203prototypes: import as direct Mesh objects45.917s;
 remove exact72mass/massfloor placements0.419s, retained identities/names unchanged.
 SourceUSD read-only, no user scene or Preferences written.
+
+
+## Stable 0.3.3 — 2026-10-30
+
+- 102 ordinary Python tests: passed, one Windows symlink privilege skip.
+- Actual isolated Blender 4.2.14 / 5.2.3: selection of 5380 walls / 670 excluded,
+  explicit mixed state, scoped overrides, lossless 2210-message grouping, native
+  linked Mesh names, custom/foreign names, repeat import and UTF-8 byte limits.
+- Final ZIP installed/enabled on both hosts; packaged scan invoke and
+  INVOKE_DEFAULT routed to the scan controller with a Revit I/O test double.
+- Manual old 0.3.0 ZIP migration, stale registration recovery, same-process UI
+  reload, updater hot reload, locked DLL, graceful shutdown, rollback and downgrade
+  passed on both hosts in isolated profiles. No Preferences were saved.
+- All six Revit worker variants rebuilt. net10 variants of 2025/2026 retain the
+  documented CS1701 baseline API reference unification warnings.
+- No new full real-model Revit run: exporter source is unchanged from 0.3.0,
+  apart from assembly version. Earlier real-model 2027 evidence remains separate;
+  full Revit 2024–2026 runs remain unverified.
+- Release ZIP SHA256: bd77d3023d8a5afd2dbebd448b15f2bb2c339c7deec4bb57ccefda99a8c66a32.
+- Experimental delta import, automatic export cache and bounds UI are excluded.

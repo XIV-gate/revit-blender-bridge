@@ -1,18 +1,18 @@
 # AGR Revit Bridge
 
-**Обновление старых установок:** если подключение/обновитель сообщает про DLL вне runtime или прежняя DLL удалена после переустановки, используйте [ZIP 0.3.2 Early Access](https://github.com/XIV-gate/revit-blender-bridge/releases/download/v0.3.2/agr_revit_bridge-0.3.2.zip). В нём исправлены восстановление собственной регистрации и загрузка новой панели без перезапуска Blender. Ручная правка .addin не нужна. Уже заблокированный старый обновитель требует разовой установки нового ZIP. Стабильный канал остаётся 0.3.0.
+**Стабильная версия 0.3.3:** скачайте ZIP из [последнего стабильного релиза](https://github.com/XIV-gate/revit-blender-bridge/releases/latest). Исправлены восстановление регистрации Revit и загрузка новой панели после установки ZIP. Если прежний обновитель уже заблокирован ошибкой DLL, один раз установите новый ZIP через Blender; ручная правка `.addin` не нужна.
 
-Version 0.3.0, developed by XIVgate. Import selected Revit geometry from Blender: choose an RVT, scan categories/worksets/elements, and import or reimport with shared prototypes and materials. The panel is alongside AGR Prepare, AGR Output and AGR Collision in the **AGR** sidebar tab.
+Version 0.3.3, developed by XIVgate. Import selected Revit geometry from Blender: choose an RVT, scan categories/worksets/elements, and import or reimport with shared prototypes and materials. The panel is alongside AGR Prepare, AGR Output and AGR Collision in the **AGR** sidebar tab.
 
 [Download the latest release](https://github.com/XIV-gate/revit-blender-bridge/releases/latest).
 
 Revit is a required local processing host. The companion Revit add-in runs API calls on Revit's main thread. No cloud conversion or desktop input automation is used. Original RVT files are copied before opening; upgrades apply only to the copy. Unknown dialogs are reported as requiring user action.
 
-The bundled worker targets Revit 2024–2027 (.NET 10). Blender 5.2 LTS is the primary host, tested with 5.2.3; additional compatibility is tested with 4.2.14 LTS. Other Revit versions require a separately built and validated worker. The live old-model smoke test is tracked separately in [verification](docs/VERIFICATION.md); synthetic controller tests do not replace it.
+The bundled worker targets Revit 2024–2027 (.NET Framework 4.8, .NET 8 and .NET 10). Blender 5.2 LTS is the primary host, tested with 5.2.3; additional compatibility is tested with 4.2.14 LTS. Other Revit versions require a separately built and validated worker. The live old-model smoke test is tracked separately in [verification](docs/VERIFICATION.md); synthetic controller tests do not replace it.
 
 [Инструкция для пользователя](docs/USER_GUIDE_RU.md).
 
-Install `agr_revit_bridge-0.3.0.zip` through **Preferences → Add-ons → Install from Disk**.
+Install `agr_revit_bridge-0.3.3.zip` through **Preferences → Add-ons → Install from Disk**.
 For later versions, use **Check for Updates / Install Update** in the panel. The
 updater reads the published stable and Early Access releases from this repository; you select an exact version, including a previous one. It
 verifies GitHub's archive SHA256 and every managed file, then reloads the add-on.
@@ -21,7 +21,7 @@ separate version folders so an older DLL held by a running Revit is not replaced
 Unknown/foreign Revit registrations are never overwritten.
 
 See [update design and release procedure](docs/UPDATES.md) and
-[0.3.0 release notes](docs/RELEASE_NOTES_0_3_0.md). A public release is required
+[0.3.3 release notes](docs/RELEASE_NOTES_0_3_3.md). A public release is required
 for anonymous updates; private drafts are deliberately not offered as updates.
 
 Source layout: `core/` contains host-independent selection/jobs/installer/launcher;

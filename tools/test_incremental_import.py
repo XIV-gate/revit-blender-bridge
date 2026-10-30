@@ -49,11 +49,13 @@ assert foreign_object in bpy.data.objects.values()
 # Repair the generated suffixes left behind by an older importer once names free.
 legacy_placement = next(obj for obj in bpy.data.objects if obj.get(adapter.OWNER) == identity and obj.get('revit:id') == '11')
 legacy_placement.name = 'e_11.001'
+legacy_placement.pop(adapter.GENERATED_NAME, None)  # Reproduce pre-marker legacy imports.
 legacy_root = next(collection for collection in bpy.data.collections if collection.get(adapter.ROOT_FLAG) and collection.get(adapter.OWNER) == identity)
 legacy_root.name = 'Revit — fixture.001'
 repaired = adapter.import_result(usd, import_id=identity, source_path='fixture.rvt', selected_element_ids={'11', '12', '13', 'nogeom'})
 assert repaired['collection'] == 'Revit — fixture'
-assert next(obj for obj in bpy.data.objects if obj.get(adapter.OWNER) == identity and obj.get('revit:id') == '11').name == 'e_11'
+repaired_placement = next(obj for obj in bpy.data.objects if obj.get(adapter.OWNER) == identity and obj.get('revit:id') == '11')
+assert repaired_placement.name == adapter.object_name(repaired_placement)
 
 root = next(collection for collection in bpy.data.collections if collection.get(adapter.ROOT_FLAG) and collection.get(adapter.OWNER) == identity)
 objects = {str(obj['revit:id']): obj for obj in root.all_objects if 'revit:id' in obj and obj.get(adapter.OWNER) == identity}

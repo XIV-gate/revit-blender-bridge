@@ -14,6 +14,7 @@ from .core.installer import manifest_matches
 from .core.jobs import JobSession, read_json, source_sha256
 from .core.launcher import WorkerProcess
 from .core.revit_versions import inspect_revit
+from .core.reporting import report_entries, raw_values
 
 
 def worker_path(props=None):
@@ -108,10 +109,15 @@ def _message(state, message, *, busy=False, progress=None):
 
 
 def _warnings(values):
-    props = STATE.props
+    set_warnings(STATE.props, values)
+
+
+def set_warnings(props, values):
     props.warnings.clear()
-    for value in dict.fromkeys(map(str, values)):
-        props.warnings.add().message = value
+    for entry in report_entries(values):
+        row = props.warnings.add()
+        for key, value in entry.items():
+            setattr(row, key, value)
     props.warning_count = len(props.warnings)
 
 
@@ -148,6 +154,9 @@ def begin_scan(scene, *, auto_import=False):
     props.elements.clear()
     props.categories.clear()
     props.worksets.clear()
+    props.types.clear()
+    props.scope_kind = props.scope_id = props.scope_label = ''
+    props.selection_filter = 'all'
     props.catalog_source = ''
     if STATE.worker is None or STATE.worker.poll() is not None:
         root = Path(bpy.path.abspath(props.cache_directory))
@@ -183,11 +192,14 @@ def _load_catalog(path):
         row.category_name = item.get('category_name', '')
         row.workset_id = str(item.get('workset_id', ''))
         row.workset_name = item.get('workset_name', '')
+        row.type_id = row.category_id + ':' + str(item.get('type_id', '-1'))
+        row.family_name = item.get('family_name', '')
+        row.type_name = row.category_name + ' · ' + ' / '.join(value for value in (row.family_name, item.get('type_name') or row.name) if value)
         row.recommendation = item.get('recommendation', 'review')
         row.reason = item.get('reason', '')
         row.selected = choices[row.element_id]
-    for kind, field in (('category', 'categories'), ('workset', 'worksets')):
-        unique = {str(item.get(kind + '_id', '')): item.get(kind + '_name', '') for item in catalog.get('elements', [])}
+    for kind, field in (('category', 'categories'), ('workset', 'worksets'), ('type', 'types')):
+        unique = {getattr(item, kind + '_id'): getattr(item, kind + '_name') for item in props.elements}
         collection = getattr(props, field)
         for identifier, name in sorted(unique.items(), key=lambda pair: pair[1].casefold()):
             row = collection.add()
@@ -305,7 +317,7 @@ def _apply_import():
     props.origin_valid = True
     props.origin_centered = STATE.pending_options['center_model']
     props.result_collection = result['collection']
-    _warnings([item.message for item in props.warnings] + ['Недоступно изображение: ' + path for path in result['missing_images']])
+    _warnings(raw_values(props.warnings) + ['Недоступно изображение: ' + path for path in result['missing_images']])
     props.result_placements = result['placements']
     props.result_prototypes = result['prototypes']
     STATE.action = None
@@ -325,7 +337,7 @@ def tick():
             response = read_json(STATE.conversion_response)
             if code != 0 or not response or not response.get('success'):
                 raise RuntimeError((response or {}).get('error', 'Не удалось подготовить геометрию; см. conversion.log'))
-            _warnings([item.message for item in STATE.props.warnings] + ['Не найдена текстура: ' + path for path in response.get('missing_textures', [])])
+            _warnings(raw_values(STATE.props.warnings) + ['Не найдена текстура: ' + path for path in response.get('missing_textures', [])])
             _apply_import()
             return None
         response = STATE.session.read_response(STATE.request_id)

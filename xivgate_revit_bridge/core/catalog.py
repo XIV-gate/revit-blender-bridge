@@ -51,7 +51,7 @@ def annotate_catalog(catalog):
         elif category_key in ('стены', 'стена', 'walls', 'wall'):
             type_name = str(item.get('type_name') or '').strip()
             if _INTERNAL_WALL_TYPE.search(type_name):
-                item.update(recommendation='exclude', reason='Имя типа явно обозначает внутреннюю стену')
+                item.update(recommendation='exclude', reason='Предположительно внутренняя стена — по имени типа; геометрия не проверялась')
             elif _FACADE_WORKSET.search(str(item.get('workset_name') or '')):
                 item.update(recommendation='include', reason='Стена в рабочем наборе фасада или наружной оболочки')
             elif item.get('recommendation') not in ('include', 'review'):
