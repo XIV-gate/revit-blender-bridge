@@ -734,10 +734,21 @@ def repoint_registration(plan, expected_content, backup_directory, addon_root):
     runtime = _target(root, 'runtime')
     if old_assembly is None or new_assembly is None:
         raise UpdateError('Регистрация не принадлежит этому дополнению')
-    for assembly in (old_assembly, new_assembly):
+    for is_old, assembly in ((True, old_assembly), (False, new_assembly)):
         checked = _reject_links(assembly)
-        if not checked.is_relative_to(runtime) or not checked.is_file():
+        if not checked.is_relative_to(runtime):
             raise UpdateError('Сборка регистрации должна находиться внутри runtime установленного дополнения')
+        if checked.is_file():
+            continue
+        # Manual ZIP replacement can remove the previous version's DLL while
+        # leaving our owned .addin pointer. Recover that stale pointer only;
+        # the replacement must exist and foreign/malformed paths remain refused.
+        stale_worker = re.fullmatch(
+            r'revit/(2024|2025(?:-net10)?|2026(?:-net10)?|2027)/'
+            r'(?:(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)/)?'
+            r'XIVgate\.RevitBridge\.Worker\.dll', checked.relative_to(runtime).as_posix())
+        if not is_old or checked.exists() or stale_worker is None:
+            raise UpdateError('Новая DLL должна существовать; старая регистрация может ссылаться только на собственный обработчик')
     if target.read_text(encoding='utf-8-sig') != expected_content:
         raise UpdateError('Регистрация изменилась; автоматическое переподключение остановлено')
     directory = backup / ('registration-' + uuid.uuid4().hex)

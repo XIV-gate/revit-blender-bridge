@@ -484,6 +484,34 @@ class UpdateTests(unittest.TestCase):
             updates.repoint_registration(new, old['content'], backup, root)
         self.assertEqual(Path(old['path']).read_text(), 'foreign')
 
+    def test_connect_recovers_missing_owned_old_worker_after_manual_zip_install(self):
+        root, backup, old, new = self.registration()
+        from xivgate_revit_bridge.core.installer import _owned_manifest
+        _owned_manifest(old['content']).unlink()
+        target = Path(old['path'])
+        self.assertEqual(updates.connect_registration(new, root, backup), target)
+        self.assertEqual(target.read_text(), new['content'])
+
+    def test_missing_foreign_old_worker_is_never_repaired(self):
+        root, backup, old, new = self.registration()
+        target = Path(old['path'])
+        outside = manifest_plan('', self.root / 'not-our-addon' / 'XIVgate.RevitBridge.Worker.dll', appdata_root=self.root)
+        target.write_text(outside['content'])
+        with self.assertRaises(updates.UpdateError):
+            updates.connect_registration(new, root, backup)
+        self.assertEqual(target.read_text(), outside['content'])
+
+    def test_repoint_never_accepts_a_missing_replacement_even_same_old_path(self):
+        from xivgate_revit_bridge.core.installer import _owned_manifest
+        root, backup, old, new = self.registration()
+        _owned_manifest(new['content']).unlink()
+        with self.assertRaises(updates.UpdateError):
+            updates.repoint_registration(new, old['content'], backup, root)
+        _owned_manifest(old['content']).unlink()
+        with self.assertRaises(updates.UpdateError):
+            updates.repoint_registration(old, old['content'], backup, root)
+        self.assertEqual(Path(old['path']).read_text(), old['content'])
+
     def test_repoint_foreign_race_preserves_foreign_and_backup(self):
         root, backup, old, new = self.registration()
         target = Path(old['path'])
