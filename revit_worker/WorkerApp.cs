@@ -194,12 +194,73 @@ internal sealed class WorkerImplementation : IExternalApplication
         using var info = BasicFileInfo.Extract(copy);
         sourceVersion = info.Format;
         if (info.IsSavedInLaterVersion) throw new IOException("Модель создана в более новой версии Revit.");
-        if (!info.IsSavedInCurrentVersion) warnings.Add("Модель " + info.Format + " обновляется только в памяти Revit; исходный RVT не сохраняется.");
+        if (!info.IsSavedInCurrentVersion) warnings.Add("Модель " + info.Format + " обновляется только в рабочей копии; исходный RVT не сохраняется.");
+        string centralPath = info.IsWorkshared ? info.CentralPath : "";
         bool links = request.TryGetProperty("options", out var opts) && opts.TryGetProperty("load_links", out var load) && load.ValueKind == JsonValueKind.True;
+        bool normalized = false;
+        Log("Copy ready; source format " + info.Format + "; workshared=" + info.IsWorkshared + "; server-origin=" + OpenPolicy.NormalizeServerSnapshot(info.IsWorkshared, centralPath));
+        if (OpenPolicy.PrepareLocalWorksharedCopy(info.IsWorkshared, links)) {
+            // Public API only. First detach without expanding user worksets, so
+            // server links cannot be loaded before their desired state is set.
+            Status("detaching", "Отсоединение RVT в локальной рабочей копии с закрытыми рабочими наборами", 0.04);
+            using (var detach = new OpenOptions { Audit = false, DetachFromCentralOption = DetachFromCentralOption.DetachAndPreserveWorksets })
+            using (var closed = new WorksetConfiguration(WorksetConfigurationOption.CloseAllWorksets)) {
+                detach.SetOpenWorksetsConfiguration(closed);
+                ownedCopyPath = copy;
+                openingOwnedCopy = true;
+                try { document = ui.Application.OpenDocumentFile(ModelPathUtils.ConvertUserVisiblePathToModelPath(copy), detach); }
+                finally { openingOwnedCopy = false; }
+            }
+            if (failureAbortReason.Length > 0) throw new InvalidOperationException(failureAbortReason);
+            CheckCancel();
+            foreach (var linkType in new FilteredElementCollector(document).OfClass(typeof(RevitLinkType)).Cast<RevitLinkType>()) {
+                if (linkType.IsNestedLink) continue; // Top-level unload also covers nested references.
+                bool loaded = RevitLinkType.IsLoaded(document, linkType.Id);
+                Log("Local reference before save: " + linkType.Id.Value + "; loaded=" + loaded);
+                // Unload uses its own API transaction; do not wrap it in ours.
+                // IsLoaded is false for links in closed worksets even when the
+                // saved global load state is Loaded. Unload them explicitly.
+                linkType.Unload(null);
+                warnings.Add("Связь оставлена незагруженной в рабочей копии: " + linkType.Name);
+            }
+            // Do not silently promise the old TransmissionData path rebasing
+            // for CAD/other references. Inspect document metadata without
+            // resolving or reloading their external files.
+            var relativeReferences = new List<string>();
+            foreach (var referenceId in ExternalFileUtils.GetAllExternalFileReferences(document)) {
+                using var reference = ExternalFileUtils.GetExternalFileReference(document, referenceId);
+                if (reference.ExternalFileReferenceType != ExternalFileReferenceType.RevitLink && reference.PathType == PathType.Relative)
+                    relativeReferences.Add(document.GetElement(referenceId)?.Name ?? referenceId.Value.ToString());
+            }
+            if (relativeReferences.Count > 0)
+                warnings.Add("Относительные внешние ссылки, кроме RVT: " + relativeReferences.Count + "; проверьте их геометрию после импорта. Пути в отсоединённой копии автоматически не переназначались: " + string.Join(", ", relativeReferences.Take(8)));
+            string prepared = Protocol.Below(Path.Combine(root, "input"), Path.Combine(root, "input", Protocol.String(request, "request_id") + "-detached.rvt"));
+            if (File.Exists(prepared)) throw new IOException("Подготовленная копия уже существует.");
+            Status("normalizing", "Сохранение отсоединённой локальной рабочей копии", 0.06);
+            using (var save = new SaveAsOptions { OverwriteExistingFile = false, MaximumBackups = 1 }) {
+                if (document.IsWorkshared) {
+                    using var worksharing = new WorksharingSaveAsOptions { SaveAsCentral = true };
+                    save.SetWorksharingOptions(worksharing);
+                }
+                document.SaveAs(prepared, save);
+            }
+            document.Close(false);
+            document = null;
+            using (var preparedInfo = BasicFileInfo.Extract(prepared)) {
+                if (preparedInfo.IsWorkshared && OpenPolicy.NormalizeServerSnapshot(true, preparedInfo.CentralPath))
+                    throw new IOException("Рабочая копия всё ещё ссылается на Revit Server; сетевое чтение ссылок не выполнялось.");
+            }
+            copy = prepared;
+            normalized = true;
+            warnings.Add("Модель общего проекта отсоединена и сохранена только в рабочей папке задания; исходный RVT не изменён.");
+            Log("Workshared snapshot normalized locally with saved unloaded links.");
+        }
         var modelPath = ModelPathUtils.ConvertUserVisiblePathToModelPath(copy);
+        Status("references", "Подготовка внешних ссылок локальной копии", 0.07);
         // DoNotLoadLinks is documented by the shipped XML but absent from the public 2027 DLL.
         // TransmissionData is the public API for suppressing link loads, applied ONLY to our copy.
-        {
+        if (!normalized) {
+            Log("Reading local TransmissionData.");
             using var transmission = TransmissionData.ReadTransmissionData(modelPath);
             if (transmission != null) {
                 bool changed = false;
@@ -218,12 +279,17 @@ internal sealed class WorkerImplementation : IExternalApplication
                 }
                 if (changed) { transmission.IsTransmitted = true; TransmissionData.WriteTransmissionData(modelPath, transmission); }
             }
+        } else {
+            // ReadTransmissionData can resolve RSN references even in a newly
+            // saved disk-central file. Native Unload + SaveAs already persisted
+            // the required state; never invoke that server-aware path here.
+            Log("Using saved native link-unload state; TransmissionData skipped for normalized copy.");
         }
         using var options = new OpenOptions { Audit = false };
         if (info.IsWorkshared) options.DetachFromCentralOption = DetachFromCentralOption.DetachAndPreserveWorksets;
         using var worksets = new WorksetConfiguration(WorksetConfigurationOption.OpenAllWorksets);
         options.SetOpenWorksetsConfiguration(worksets);
-        string openingMessage = info.IsSavedInCurrentVersion ? "Открытие копии RVT" : "Обновление копии RVT с " + info.Format + " до " + ui.Application.VersionNumber + "; исходный файл не изменяется";
+        string openingMessage = normalized ? "Открытие подготовленной локальной копии RVT" : info.IsSavedInCurrentVersion ? "Открытие копии RVT" : "Обновление копии RVT с " + info.Format + " до " + ui.Application.VersionNumber + "; исходный файл не изменяется";
         Status("opening", openingMessage, 0.08);
         ownedCopyPath = copy;
         openingOwnedCopy = true;

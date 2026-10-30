@@ -35,6 +35,13 @@ static class ProtocolTests
             }
 #endif
             string session = Guid.NewGuid().ToString(), request = Guid.NewGuid().ToString();
+            Check(OpenPolicy.NormalizeServerSnapshot(true, "RSN://example.invalid/project/model.rvt"), "server-origin local snapshot is detached before TransmissionData");
+            Check(OpenPolicy.NormalizeServerSnapshot(true, "  rsn://example.invalid/model.rvt"), "server prefix is case insensitive");
+            Check(!OpenPolicy.NormalizeServerSnapshot(true, @"C:\fixtures\central.rvt"), "disk central keeps existing local reference preparation");
+            Check(!OpenPolicy.NormalizeServerSnapshot(false, ""), "non-workshared input keeps ordinary path");
+            Check(OpenPolicy.PrepareLocalWorksharedCopy(true, false), "workshared local preparation precedes reference metadata reads");
+            Check(!OpenPolicy.PrepareLocalWorksharedCopy(true, true), "explicit link-loading option is not silently overridden");
+            Check(!OpenPolicy.PrepareLocalWorksharedCopy(false, false), "non-workshared files have no worksets to close");
             Check(Compat.Hex(Compat.Sha256(Encoding.UTF8.GetBytes("abc"))).ToLowerInvariant() == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "framework SHA256 adapter matches canonical fingerprint");
             using (var stream = new MemoryStream(new byte[] { 1, 2, 3, 4 })) {
                 byte[] buffer = new byte[6]; Compat.ReadExactly(stream, buffer, 1, 4);

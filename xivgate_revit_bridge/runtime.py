@@ -576,6 +576,7 @@ def tick():
         if status:
             name = str(status.get('state', '')).upper()
             allowed = {'OPENING': 'SCANNING', 'SCANNING': 'SCANNING', 'EXPORTING': 'EXPORTING',
+                       'DETACHING': 'SCANNING', 'NORMALIZING': 'SCANNING', 'REFERENCES': 'SCANNING',
                        'REQUIRES_ACTION': 'REQUIRES_ACTION', 'STARTING': 'STARTING'}
             _message(allowed.get(name, STATE.props.status), str(status.get('message', 'Обработка модели…')),
                      busy=True, progress=status.get('progress', STATE.props.progress), timing_stage=name.lower() or 'worker')

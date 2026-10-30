@@ -303,3 +303,39 @@ assembly version changed in C#.
   d3f36344c0d37f4bbd77743f8543cd1a5509032feb5bcda7696dc54db34b7b5b.
 - The remote Revit2026 export delay/failure remains unproven without its logs;
   reproducing the cancellation bug does not establish that separate root cause.
+
+## Early Access 0.4.7 — local workshared preparation and temporary view templates
+
+- Native Revit 2027.2 reproduced a Revit Server wait inside
+  TransmissionData.ReadTransmissionData on the supplied Revit 2024 model.
+  Detach/closed worksets/native link Unload(null)/local SaveAs/reopen all worksets
+  avoided that call. A separate native export reproduced Detail Level cannot be
+  modified; removing the template from only the temporary export view resolved it.
+- Full original-file run: 2962 catalog elements, 1414 occurrences, 890 prototypes,
+  32,912 triangles, 28 materials. Preparation/format upgrade took about 4 minutes;
+  export after readiness took 3.52 seconds. Source SHA256 unchanged.
+- Previous larger model: all 19,531 element IDs and raw recommendations matched
+  the prior catalog, and the same annotated default selection contained 14,811 IDs.
+  Full export succeeded with 12,108 occurrences, 5203 prototypes, 2,844,112 triangles
+  and 59 materials. Source SHA256 unchanged. Owned Revit exited via shutdown request;
+  original .addin pointer restored byte for byte. Live Blender scene not modified.
+- Supplied-model payload converted/imported in isolated Blender 5.2.3 and 4.2.14:
+  890 finite mesh UV sets, sampled UV values preserved, instance transforms within
+  floating-point tolerance, three available images decoded/connected/packed.
+  The successful image test used a shorter isolated payload path; an initial
+  deeply nested test path exceeded embedded Python filesystem handling limits.
+  This does not establish arbitrary long-path texture support.
+- Final ZIP installation/enabling and actual 0.4.6 → 0.4.7 → 0.4.6 transitions
+  passed in both hosts. Log export and Scene-removal/cancellation regressions also
+  passed in both hosts, without Preferences saves. Native functional runs preceded
+  the final metadata-only relative-reference warning; that warning compiled against
+  all supported APIs but was not exercised with a linked CAD fixture.
+- 118 pure Python tests (one privilege skip); 93 .NET 10 / 97 .NET Framework
+  protocol assertions. All six worker variants built 0.4.7.0. Existing net10 CS1701
+  baseline warnings unchanged. Native Revit 2024–2026 execution remains untested.
+- Package manifest hashes, six worker variants and absence of personal username
+  paths verified. ZIP SHA256:
+  006cee2b9602e69ce97f739640374280237efe38a3b281ea197f2e72f9d1e8d6.
+- Relative non-Revit external references are reported for inspection, without
+  automatic reloading/rebasing. Their transfer is not guaranteed by this release.
+  DLL trust prompts remain unchanged; no security settings were modified.

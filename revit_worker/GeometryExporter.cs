@@ -103,6 +103,13 @@ internal sealed class GeometryExporter : IPhotoRenderContext
                     var type = new FilteredElementCollector(doc).OfClass(typeof(ViewFamilyType)).Cast<ViewFamilyType>().First(v => v.ViewFamily == ViewFamily.ThreeDimensional);
                     view = View3D.CreateIsometric(doc, type.Id);
                     view.Name = "XIVgate_RBB_" + Guid.NewGuid().ToString("N");
+                    // New views can inherit the project's default template,
+                    // which may lock detail level, display and visibility.
+                    // Detach only OUR temporary view; rollback preserves all
+                    // existing project views, templates and type defaults.
+                    view.ViewTemplateId = ElementId.InvalidElementId;
+                    doc.Regenerate();
+                    if (!view.CanModifyDetailLevel()) throw new InvalidOperationException("Временный 3D-вид не позволяет задать детализацию после отключения шаблона.");
                     view.DetailLevel = detail.ToLowerInvariant() switch { "coarse" => ViewDetailLevel.Coarse, "fine" => ViewDetailLevel.Fine, _ => ViewDetailLevel.Medium };
                     view.DisplayStyle = DisplayStyle.Shading;
                     foreach (Category c in doc.Settings.Categories) {
