@@ -93,6 +93,13 @@ is unchanged, and registration points at the new worker. An intentionally broken
 worker shutdown, file loading during checks/downloads, and release of the OS lock
 even when registration rollback itself fails. Blender Preferences are not saved.
 
-Public anonymous download from this repository cannot be claimed until the owner
-approves repository visibility and publication of the prepared GitHub release.
-Private drafts are intentionally rejected by the production updater.
+Following the owner's explicit approval, the repository was made public and
+v0.2.0 was published on 2026-10-30. A post-publication check used the production
+fetch/download/validation functions without GitHub credentials. The downloaded
+archive SHA256 matched the published asset. The same check passed inside isolated
+Blender 5.2.3 with per-process online access: the actual UI controller reports 0.2.0
+as current, and an older-version query downloads and validates the live release.
+No Preferences were saved. Private drafts remain intentionally rejected.
+
+Repeat the opt-in host check with `--script test_public_update.py --online` on
+`tools/run_blender_test.py`; the flag enables network only for that isolated process.

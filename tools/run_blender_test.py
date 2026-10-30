@@ -11,6 +11,7 @@ def main():
     parser.add_argument('--workspace', required=True)
     parser.add_argument('--script', default='test_blender_integration.py')
     parser.add_argument('--timeout', type=float)
+    parser.add_argument('--online', action='store_true', help='Allow network only in this isolated test process')
     args = parser.parse_args()
     root = Path(args.workspace).resolve()
     if root.drive.casefold() != 'd:' or not root.is_dir():
@@ -26,6 +27,8 @@ def main():
         env[variable] = str(path)
     env.update(PYTHONDONTWRITEBYTECODE='1', PYTHONNOUSERSITE='1', RBB_SOURCE_DIR=str(source), RBB_TEST_ROOT=str(root))
     command = [args.blender, '--background', '--disable-autoexec', '--python-exit-code', '1', '--python', str(source / 'tools' / args.script)]
+    if args.online:
+        command.insert(3, '--online-mode')
     return subprocess.run(command, env=env, cwd=root, check=False, timeout=args.timeout).returncode
 
 
