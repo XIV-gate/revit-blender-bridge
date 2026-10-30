@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sys
 import time
+import zipfile
 
 import addon_utils
 import bpy
@@ -13,6 +14,8 @@ sys.dont_write_bytecode = True
 root = Path(os.environ['RBB_TEST_ROOT'])
 stable = root / os.environ['RBB_STABLE_PACKAGE']
 early = root / os.environ['RBB_EARLY_PACKAGE']
+with zipfile.ZipFile(early) as archive:
+    early_version = archive.read('xivgate_revit_bridge/VERSION').decode().strip()
 assert bpy.ops.preferences.addon_install(filepath=str(stable), overwrite=True) == {'FINISHED'}
 addon_utils.modules_refresh()
 module = addon_utils.enable('xivgate_revit_bridge', default_set=False, persistent=False)
@@ -39,8 +42,8 @@ def wait():
     assert not controller().STATE.busy
 
 
-for version, path, channel in [('0.3.1', early, 'early'), ('0.3.0', stable, 'stable')]:
-    info = dict(version=version, available=version == '0.3.1', installable=True, channel=channel,
+for version, path, channel in [(early_version, early, 'early'), ('0.3.0', stable, 'stable')]:
+    info = dict(version=version, available=version == early_version, installable=True, channel=channel,
                 asset_name=path.name, sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
                 size=path.stat().st_size, url='injected-test-only', release_url='injected-test-only')
     # The UI controls the channel and selected version; download is the only I/O double.
@@ -58,7 +61,7 @@ for version, path, channel in [('0.3.1', early, 'early'), ('0.3.0', stable, 'sta
     assert props.source_rvt == 'test-only-model.rvt'
     assert props.preserve_instances
     assert cube in bpy.data.objects.values()
-    assert hasattr(props, 'reuse_export_cache') == (version == '0.3.1')
+    assert hasattr(props, 'reuse_export_cache') == (version == early_version)
 
 addon_utils.disable('xivgate_revit_bridge', default_set=False)
 assert not (Path(os.environ['BLENDER_USER_CONFIG']) / 'userpref.blend').exists()

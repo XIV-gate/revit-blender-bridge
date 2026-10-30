@@ -1,6 +1,6 @@
 # AGR Revit Bridge
 
-Version 0.3.1 Early Access, developed by XIVgate. Import selected Revit geometry from Blender: choose an RVT, scan categories/worksets/elements, and import or reimport with shared prototypes and materials. The panel is alongside AGR Prepare, AGR Output and AGR Collision in the **AGR** sidebar tab.
+Version 0.3.2 Early Access, developed by XIVgate. Import selected Revit geometry from Blender: choose an RVT, scan categories/worksets/elements, and import or reimport with shared prototypes and materials. The panel is alongside AGR Prepare, AGR Output and AGR Collision in the **AGR** sidebar tab.
 
 [Download the latest release](https://github.com/XIV-gate/revit-blender-bridge/releases/latest).
 
@@ -50,3 +50,5 @@ Early Access0.3.1: automatic local setup/projectcache, reversible selection,
 new-elements-only export/merge, semantic mesh/material reuse, type grouping and
 bounds preview, source-verified cache and conservative completed-job cleanup.
 Stablemain remains0.3.0. New features are offered only in the Early Access channel.
+
+0.3.2 fixes stale owned Revit registrations after manual ZIP replacement and reloads disabled cached modules when enabling the new ZIP, without restarting Blender. See [migration notes](docs/RELEASE_NOTES_0_3_2.md).

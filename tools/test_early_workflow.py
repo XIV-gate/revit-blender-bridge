@@ -13,6 +13,7 @@ baseline = runpy.run_path(str(source_root / 'tools' / 'test_controller_integrati
 addon, runtime = baseline['xivgate_revit_bridge'], baseline['runtime']
 TestWorker, scene, work = baseline['TestWorker'], baseline['scene'], baseline['WORK']
 addon.register()
+from xivgate_revit_bridge import runtime  # Manual enable reloads disabled cached modules.
 bpy.context.window.scene = scene
 props = scene.xivgate_revit_bridge
 

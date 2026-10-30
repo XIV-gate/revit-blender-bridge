@@ -148,3 +148,14 @@ uses only owned isolated registration and never saves Preferences.
 Published0.3.0 stable and0.3.1 prerelease on2026-10-30. Anonymous GitHub checks
 inside isolatedBlender5.2.3 verified both channel lists, lateststable=0.3.0,
 both downloads and exact archive/fileSHA256. No Preferences saved.
+
+
+## 0.3.2 migration regression
+
+92puretests (one Windows symlink-creation privilege skip). New tests recover a
+missing OWN old DLL but refuse a missing replacement or foreign registration.
+RealZIP0.3.0 installation→stale0.2.0pointerfailure→disable/install0.3.2/enable in
+sameBlenderprocess→newUI and repairedregistration PASS5.2.3+4.2.14. Newupdater also
+recovers the stale pointer during a verified release transition. No Preferences
+saved and no live profile writes. All6 worker assemblies rebuilt0.3.2.0; only
+assembly version changed in C#.

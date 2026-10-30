@@ -491,7 +491,7 @@ class RBB_PT_panel(bpy.types.Panel):
         files.prop(props, 'source_rvt')
         row = files.row(align=True)
         row.operator('xivgate_rbb.scan', text='Получить список', icon='VIEWZOOM')
-        layout.label(text='Ранний доступ 0.3.1', icon='EXPERIMENTAL')
+        layout.label(text='Ранний доступ ' + updater.current_version(), icon='EXPERIMENTAL')
         box = layout.box()
         icon = 'ERROR' if props.status == 'ERROR' else 'QUESTION' if props.status == 'REQUIRES_ACTION' else 'INFO'
         for index, line in enumerate(textwrap.wrap(props.message, width=48)[:8]):
