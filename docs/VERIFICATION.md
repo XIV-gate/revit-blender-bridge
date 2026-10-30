@@ -144,3 +144,7 @@ the same intentionally edited sharedmesh. No collection-instance placeholders,
 transformerror0,3packedimages. Readonlysource manifest hash unchanged.
 Fullhost4.2/5.2 ZIPswitch stable0.3.0→EA0.3.1→stable0.3.0 preserves scene/settings,
 uses only owned isolated registration and never saves Preferences.
+
+Published0.3.0 stable and0.3.1 prerelease on2026-10-30. Anonymous GitHub checks
+inside isolatedBlender5.2.3 verified both channel lists, lateststable=0.3.0,
+both downloads and exact archive/fileSHA256. No Preferences saved.
