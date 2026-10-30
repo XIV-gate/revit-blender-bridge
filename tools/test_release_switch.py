@@ -16,6 +16,10 @@ stable = root / os.environ['RBB_STABLE_PACKAGE']
 early = root / os.environ['RBB_EARLY_PACKAGE']
 with zipfile.ZipFile(early) as archive:
     early_version = archive.read('xivgate_revit_bridge/VERSION').decode().strip()
+    early_cache = 'xivgate_revit_bridge/workflow.py' in archive.namelist()
+with zipfile.ZipFile(stable) as archive:
+    stable_version = archive.read('xivgate_revit_bridge/VERSION').decode().strip()
+    stable_cache = 'xivgate_revit_bridge/workflow.py' in archive.namelist()
 assert bpy.ops.preferences.addon_install(filepath=str(stable), overwrite=True) == {'FINISHED'}
 addon_utils.modules_refresh()
 module = addon_utils.enable('xivgate_revit_bridge', default_set=False, persistent=False)
@@ -42,7 +46,7 @@ def wait():
     assert not controller().STATE.busy
 
 
-for version, path, channel in [(early_version, early, 'early'), ('0.3.0', stable, 'stable')]:
+for version, path, channel in [(early_version, early, 'early'), (stable_version, stable, 'stable')]:
     info = dict(version=version, available=version == early_version, installable=True, channel=channel,
                 asset_name=path.name, sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
                 size=path.stat().st_size, url='injected-test-only', release_url='injected-test-only')
@@ -61,7 +65,7 @@ for version, path, channel in [(early_version, early, 'early'), ('0.3.0', stable
     assert props.source_rvt == 'test-only-model.rvt'
     assert props.preserve_instances
     assert cube in bpy.data.objects.values()
-    assert hasattr(props, 'reuse_export_cache') == (version == early_version)
+    assert hasattr(props, 'reuse_export_cache') == (early_cache if version == early_version else stable_cache)
 
 addon_utils.disable('xivgate_revit_bridge', default_set=False)
 assert not (Path(os.environ['BLENDER_USER_CONFIG']) / 'userpref.blend').exists()

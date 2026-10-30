@@ -6,6 +6,8 @@ import math
 PREVIEW_TAG = 'xivgate_rbb_preview'
 SCENE_TAG = 'xivgate_rbb_preview_scene'
 MESH_TAG = 'xivgate_rbb_preview_mesh'
+GROUP_TAG = 'xivgate_rbb_preview_group'
+OFFSET_TAG = 'xivgate_rbb_preview_offset'
 ORANGE = (1.0, 0.28, 0.025, 1.0)
 BOX_EDGES = ((0, 1), (0, 2), (1, 3), (2, 3), (4, 5), (4, 6),
              (5, 7), (6, 7), (0, 4), (1, 5), (2, 6), (3, 7))
@@ -68,7 +70,7 @@ def _collections(scene):
     return result
 
 
-def _clear_preview(scene, keep=None):
+def _clear_preview(scene, keep=None, group_key=None):
     import bpy
     own_collections = _collections(scene)
     other_collections = set()
@@ -78,6 +80,8 @@ def _clear_preview(scene, keep=None):
     result = {'removed': 0, 'unlinked': 0, 'retained_shared': 0}
     for obj in tuple(scene.objects):
         if obj == keep or obj.get(PREVIEW_TAG) is not True or obj.get(SCENE_TAG) != scene:
+            continue
+        if group_key is not None and obj.get(GROUP_TAG) != group_key:
             continue
         mesh = obj.data if obj.type == 'MESH' else None
         for collection in tuple(obj.users_collection):
@@ -95,18 +99,38 @@ def _clear_preview(scene, keep=None):
     return result
 
 
-def clear_preview(scene):
+def clear_preview(scene, group_key=None):
     """Unlink only this scene's previews and delete only their unused owned meshes."""
-    return _clear_preview(scene)
+    return _clear_preview(scene, group_key=group_key)
 
 
-def preview_bounds(scene, rows, source_offset=(0, 0, 0), limit=1000):
+def has_preview(scene, group_key):
+    return any(obj.get(PREVIEW_TAG) is True and obj.get(SCENE_TAG) == scene
+               and obj.get(GROUP_TAG) == group_key for obj in scene.objects)
+
+
+def align_previews(scene, source_offset=(0, 0, 0), parent=None):
+    """Keep catalog previews aligned when first import chooses its precise origin."""
+    from mathutils import Matrix
+    offset = _vector(source_offset)
+    import bpy
+    for obj in scene.objects:
+        if obj.get(PREVIEW_TAG) is True and obj.get(SCENE_TAG) == scene:
+            if any(obj.name in other.objects for other in bpy.data.scenes if other != scene):
+                continue
+            previous = _vector(obj.get(OFFSET_TAG, offset))
+            obj.parent = parent
+            obj.matrix_parent_inverse = Matrix.Identity(4)
+            obj.matrix_basis = Matrix.Translation(tuple(a-b for a, b in zip(previous, offset)))
+
+
+def preview_bounds(scene, rows, source_offset=(0, 0, 0), limit=1000, *, group_key=None, label=''):
     """Create one orange edge mesh without selection, camera, viewport or import changes."""
     import bpy
     vertices, edges, result = bbox_wire_data(rows, source_offset, limit)
     result['object_name'] = ''
     if not vertices:
-        result.update(clear_preview(scene))
+        result.update(clear_preview(scene, group_key))
         return result
     mesh = bpy.data.meshes.new('AGR_Revit_Границы')
     obj = None
@@ -114,16 +138,20 @@ def preview_bounds(scene, rows, source_offset=(0, 0, 0), limit=1000):
         mesh.from_pydata(vertices, edges, [])
         mesh.update()
         mesh[MESH_TAG] = True
-        obj = bpy.data.objects.new('AGR_Revit_Предпросмотр', mesh)
+        obj = bpy.data.objects.new('Превью Revit — ' + label if label else 'AGR_Revit_Предпросмотр', mesh)
         obj[PREVIEW_TAG] = True
         obj[SCENE_TAG] = scene
+        if group_key is not None:
+            obj[GROUP_TAG] = group_key
+        obj[OFFSET_TAG] = list(_vector(source_offset))
         obj.color = ORANGE
         obj.display_type = 'WIRE'
         obj.show_wire = True
         obj.show_in_front = True
         obj.hide_render = True
+        obj.hide_select = True
         scene.collection.objects.link(obj)
-        result.update(_clear_preview(scene, keep=obj))
+        result.update(_clear_preview(scene, keep=obj, group_key=group_key))
         result['object_name'] = obj.name
         return result
     except Exception:

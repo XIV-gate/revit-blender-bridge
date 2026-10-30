@@ -64,17 +64,54 @@ def inspect_revit(path, *, version_reader=file_version):
     return dict(path=str(path), version=version, year=year, runtime=runtime, key=key)
 
 
-def discover(roots=None, *, inspect=inspect_revit):
+def _registry_paths():
+    """Read only installation values, never user document/history/profile keys."""
+    if os.name != 'nt':
+        return []
+    import winreg
+    result = []
+    def locations(hive, key_path, view):
+        try:
+            with winreg.OpenKey(hive, key_path, 0, winreg.KEY_READ | view) as key:
+                for name in ('InstallationLocation', 'InstallLocation', 'InstallDir'):
+                    try:
+                        value, _ = winreg.QueryValueEx(key, name)
+                        if isinstance(value, str) and value:
+                            result.append(Path(os.path.expandvars(value)) / 'Revit.exe')
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+            for year in SUPPORTED_YEARS:
+                for label in (str(year), f'Autodesk Revit {year}'):
+                    parent = 'SOFTWARE\\Autodesk\\Revit\\' + label
+                    locations(hive, parent, view)
+                    try:
+                        with winreg.OpenKey(hive, parent, 0, winreg.KEY_READ | view) as key:
+                            for index in range(winreg.QueryInfoKey(key)[0]):
+                                child = winreg.EnumKey(key, index)
+                                locations(hive, parent + '\\' + child, view)
+                    except OSError:
+                        pass
+    return result
+
+
+def discover(roots=None, *, inspect=inspect_revit, registry_paths=None):
+    system_search = roots is None
     if roots is None:
         roots = list(dict.fromkeys(value for value in (os.environ.get('ProgramW6432'), os.environ.get('PROGRAMFILES')) if value))
+    paths = [Path(root) / 'Autodesk' / f'Revit {year}' / 'Revit.exe'
+             for root in roots for year in SUPPORTED_YEARS]
+    paths.extend(_registry_paths() if system_search and registry_paths is None else registry_paths or [])
     found = {}
-    for root in roots:
-        for year in SUPPORTED_YEARS:
-            path = Path(root) / 'Autodesk' / f'Revit {year}' / 'Revit.exe'
-            if path.is_file():
-                try:
-                    info = inspect(path)
-                    found[os.path.normcase(info['path'])] = info
-                except (OSError, ValueError, KeyError):
-                    continue
+    for path in paths:
+        path = Path(path)
+        if path.is_file() and path.name.casefold() == 'revit.exe':
+            try:
+                info = inspect(path)
+                found[os.path.normcase(str(Path(info['path']).resolve()))] = info
+            except (OSError, ValueError, KeyError):
+                continue
     return sorted(found.values(), key=lambda info: tuple(map(int, info['version'].split('.'))), reverse=True)

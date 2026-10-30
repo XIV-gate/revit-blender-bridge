@@ -45,7 +45,7 @@ addon_utils.disable('xivgate_revit_bridge', default_set=False)
 assert bpy.ops.preferences.addon_install(filepath=str(new_zip), overwrite=True) == {'FINISHED'}
 addon_utils.modules_refresh()
 module = addon_utils.enable('xivgate_revit_bridge', default_set=False, persistent=False)
-assert module.bl_info['version'] == (0, 3, 2)
+assert module.bl_info['version'] == (0, 4, 0)
 assert module.ui is not old_ui, 'Manual ZIP install retained the old panel'
 assert scene.xivgate_revit_bridge.import_id == 'keep-scene-settings'
 scene.xivgate_revit_bridge.addin_folder = str(registration_folder)

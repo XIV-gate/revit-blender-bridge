@@ -81,3 +81,13 @@ GitHub prerelease flags, not branch names, determine the Blender channel.
 0.3.0 remains latest stable while 0.3.1/0.3.2 test builds are prereleases.
 A tested build can be promoted deliberately by changing its release status;
 never replace an existing published ZIP with different bytes under the same version.
+
+
+## Release cadence from 0.4.0
+
+0.4.0 is the unified stable release with all current features. Patches 0.4.1,
+0.4.2 and later are published as Early Access / GitHub prereleases. After fixes
+are verified, the next stable release is 0.5.0. main represents the stable product;
+early-access starts from the same baseline and carries the next prerelease work.
+An Early Access release must not replace GitHub latest stable. Historical released
+ZIPs remain immutable; releases/latest is the normal user download entry point.

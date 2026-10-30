@@ -33,6 +33,7 @@ addon_utils.modules_refresh()
 module = addon_utils.enable('xivgate_revit_bridge', default_set=False, persistent=False)
 assert module is not None
 assert module.bl_info['name'] == 'AGR Revit Bridge'
+initial_version = module.bl_info['version']
 assert module.ui.RBB_PT_panel.bl_category == 'AGR'
 from xivgate_revit_bridge.core.installer import manifest_plan, install_manifest
 
@@ -126,6 +127,8 @@ class FakeWorker:
     def terminate(self): assert self.closed, 'Updater must never force-kill a worker'
 
 class FakeSession:
+    def finish(self):
+        assert worker.closed, "Only a completed worker job can be finalized"
     requested = None
     def request(self, action):
         self.requested = action; worker.closed = True
@@ -144,10 +147,10 @@ try:
         else:
             raise AssertionError('Offline setting was ignored')
         network.assert_not_called()
-    archive = future_archive('0.3.1')
-    update.start_check(fetcher=lambda version: info_for(archive, '0.3.1'))
+    archive = future_archive('0.9.1')
+    update.start_check(fetcher=lambda version: info_for(archive, '0.9.1'))
     update = advance()
-    assert update.STATE.info['version'] == '0.3.1'
+    assert update.STATE.info['version'] == '0.9.1'
     class DeniedSession:
         def request(self, action): return {'request_id': 'denied-shutdown'}
         def read_response(self, request_id): return {'success': False, 'error': 'foreign document remains open'}
@@ -155,7 +158,7 @@ try:
     update.start_install(downloader=lambda info, directory: archive)
     update = advance()
     assert update.STATE.phase == 'ERROR' and not worker.closed
-    assert module.bl_info['version'] == (0, 3, 0) and old_worker.read_bytes() == old_bytes
+    assert module.bl_info['version'] == initial_version and old_worker.read_bytes() == old_bytes
     assert not module.runtime.MAINTENANCE
     module.runtime.STATE.session = session
     update.start_install(downloader=lambda info, directory: archive)
@@ -167,9 +170,9 @@ try:
         raise AssertionError('Scan must be blocked while installing an update')
     update = advance()
     module = sys.modules['xivgate_revit_bridge']
-    assert module.bl_info['version'] == (0, 3, 1), update.STATE.message
+    assert module.bl_info['version'] == (0, 9, 1), update.STATE.message
     assert update.STATE.phase == 'DONE', update.STATE.message
-    assert module.runtime._update_test_marker == '0.3.1'
+    assert module.runtime._update_test_marker == '0.9.1'
     assert session.requested == 'shutdown' and worker.closed
     assert old_worker.read_bytes() == old_bytes
     assert ET.parse(registration).findtext('./AddIn/Assembly') == str(module.runtime.worker_path())
@@ -179,14 +182,14 @@ try:
     assert props.elements[0].unique_id == 'stable-id' and not props.elements[0].selected
     assert original_cube in bpy.data.objects.values()
     # A syntax-valid but broken new register() must restore code and the Revit pointer.
-    archive = future_archive('0.3.2', broken=True)
-    update.start_check(fetcher=lambda version: info_for(archive, '0.3.2'))
+    archive = future_archive('0.9.2', broken=True)
+    update.start_check(fetcher=lambda version: info_for(archive, '0.9.2'))
     update = advance()
     update.start_install(downloader=lambda info, directory: archive)
     update = advance()
     module = sys.modules['xivgate_revit_bridge']
-    assert module.bl_info['version'] == (0, 3, 1)
-    assert module.runtime._update_test_marker == '0.3.1'
+    assert module.bl_info['version'] == (0, 9, 1)
+    assert module.runtime._update_test_marker == '0.9.1'
     assert update.STATE.phase == 'ERROR', update.STATE.message
     assert ET.parse(registration).findtext('./AddIn/Assembly') == str(module.runtime.worker_path())
     assert scene.xivgate_revit_bridge.source_rvt == 'user-selected-model.rvt'
@@ -211,14 +214,14 @@ try:
         ready = threading.Event()
         def delayed(version):
             ready.wait(5)
-            return info_for(archive, '0.3.2')
+            return info_for(archive, '0.9.2')
         def delayed_download(info, directory):
             ready.wait(5)
             return archive
         if phase == 'check':
             update.start_check(fetcher=delayed)
         else:
-            update.start_check(fetcher=lambda version: info_for(archive, '0.3.2'))
+            update.start_check(fetcher=lambda version: info_for(archive, '0.9.2'))
             update = advance()
             update.start_install(downloader=delayed_download)
             assert module.runtime.MAINTENANCE
@@ -236,8 +239,8 @@ try:
     update.STATE.scene = bpy.context.scene
     update.STATE.work = run / 'double-failure'
     update.STATE.work.mkdir()
-    update.STATE.info = dict(version='0.3.2', asset_name='unused.zip')
-    update.STATE.package = SimpleNamespace(manifest={'worker': 'runtime/revit/2027/0.3.2/XIVgate.RevitBridge.Worker.dll'})
+    update.STATE.info = dict(version='0.9.2', asset_name='unused.zip')
+    update.STATE.package = SimpleNamespace(manifest={'worker': 'runtime/revit/2027/0.9.2/XIVgate.RevitBridge.Worker.dll'})
     with patch.object(update.updates, 'install_package', return_value=package_transaction), \
          patch.object(update.updates, 'repoint_registration', return_value=registration_transaction), \
          patch.object(update, '_safe_unregister'), patch.object(update, '_purge_children'), \

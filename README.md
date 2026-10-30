@@ -1,16 +1,18 @@
 # AGR Revit Bridge
 
-Version 0.3.2 Early Access, developed by XIVgate. Import selected Revit geometry from Blender: choose an RVT, scan categories/worksets/elements, and import or reimport with shared prototypes and materials. The panel is alongside AGR Prepare, AGR Output and AGR Collision in the **AGR** sidebar tab.
+**Единая стабильная сборка 0.4.0:** все текущие функции доступны в последнем стабильном релизе. Ранний доступ предназначен только для будущих экспериментов.
+
+Version 0.4.0 Stable, developed by XIVgate. Import selected Revit geometry from Blender: choose an RVT, scan categories/worksets/elements, and import or reimport with shared prototypes and materials. The panel is alongside AGR Prepare, AGR Output and AGR Collision in the **AGR** sidebar tab.
 
 [Download the latest release](https://github.com/XIV-gate/revit-blender-bridge/releases/latest).
 
 Revit is a required local processing host. The companion Revit add-in runs API calls on Revit's main thread. No cloud conversion or desktop input automation is used. Original RVT files are copied before opening; upgrades apply only to the copy. Unknown dialogs are reported as requiring user action.
 
-The bundled worker targets Revit 2024–2027 (.NET 10). Blender 5.2 LTS is the primary host, tested with 5.2.3; additional compatibility is tested with 4.2.14 LTS. Other Revit versions require a separately built and validated worker. The live old-model smoke test is tracked separately in [verification](docs/VERIFICATION.md); synthetic controller tests do not replace it.
+The bundled worker targets Revit 2024–2027 (.NET Framework 4.8, .NET 8 and .NET 10). Blender 5.2 LTS is the primary host, tested with 5.2.3; additional compatibility is tested with 4.2.14 LTS. Other Revit versions require a separately built and validated worker. The live old-model smoke test is tracked separately in [verification](docs/VERIFICATION.md); synthetic controller tests do not replace it.
 
 [Инструкция для пользователя](docs/USER_GUIDE_RU.md).
 
-Install `agr_revit_bridge-0.3.0.zip` through **Preferences → Add-ons → Install from Disk**.
+Install `agr_revit_bridge-0.4.0.zip` through **Preferences → Add-ons → Install from Disk**.
 For later versions, use **Check for Updates / Install Update** in the panel. The
 updater reads the published stable and Early Access releases from this repository; you select an exact version, including a previous one. It
 verifies GitHub's archive SHA256 and every managed file, then reloads the add-on.
@@ -46,9 +48,11 @@ cancellation on file load with an injected network transport in the isolated pro
 See [design](docs/DESIGN.md), [protocol](docs/PROTOCOL.md), and [implementation plan](docs/PLAN.md).
 
 
-Early Access0.3.1: automatic local setup/projectcache, reversible selection,
-new-elements-only export/merge, semantic mesh/material reuse, type grouping and
-bounds preview, source-verified cache and conservative completed-job cleanup.
-Stablemain remains0.3.0. New features are offered only in the Early Access channel.
 
-0.3.2 fixes stale owned Revit registrations after manual ZIP replacement and reloads disabled cached modules when enabling the new ZIP, without restarting Blender. See [migration notes](docs/RELEASE_NOTES_0_3_2.md).
+Current stable 0.4.0 includes reversible local selection, safe delta imports,
+verified export cache, type search, bounds previews, explicit Revit executable
+selection, readable Mesh/object names and compact diagnostics. Future experiments
+are developed in early-access and promoted to main after verification.
+See [0.4.0 release notes](docs/RELEASE_NOTES_0_4_0.md).
+
+Release cadence: **0.4.0 stable → 0.4.1/0.4.2… Early Access fixes → 0.5.0 stable after verification**.

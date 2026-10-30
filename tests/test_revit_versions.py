@@ -7,6 +7,19 @@ from xivgate_revit_bridge.core import revit_versions as rv
 
 
 class RevitVersionTests(unittest.TestCase):
+    def test_custom_registered_installs_are_validated_deduplicated_and_sorted(self):
+        with tempfile.TemporaryDirectory(dir=os.environ['XIVGATE_TEST_ROOT']) as temp:
+            root = Path(temp)
+            first, second = root / 'custom24' / 'Revit.exe', root / 'custom26' / 'Revit.exe'
+            for path in (first, second):
+                path.parent.mkdir()
+                path.write_bytes(b'fixture')
+            def inspect(path):
+                year = 2024 if path == first else 2026
+                return dict(path=str(path), year=year, key=str(year), version=str(year-2000)+'.0.0.0')
+            result = rv.discover([], registry_paths=[first, second, first, root/'missing.exe'], inspect=inspect)
+            self.assertEqual([row['year'] for row in result], [2026, 2024])
+
     def test_year_and_runtime_select_separate_worker(self):
         for version, runtime, expected in [('24.3.0.0', 4, '2024'),
                 ('25.4.0.0', 8, '2025'), ('25.5.0.0', 10, '2025-net10'),

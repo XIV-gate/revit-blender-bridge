@@ -17,6 +17,49 @@ from .core.reporting import raw_values
 
 _SYNCING = False
 _RELEASE_ITEMS = []
+_REVIT_ITEMS = []
+
+
+def revit_installations(self, context):
+    return _REVIT_ITEMS or [('NONE', 'Установки не найдены', 'Укажите Revit.exe вручную')]
+
+
+class RBB_OT_choose_revit(bpy.types.Operator):
+    bl_idname = 'xivgate_rbb.choose_revit'
+    bl_label = 'Выбрать установленный Revit'
+    bl_description = 'Найти версии 2024–2027 в стандартных папках и зарегистрированных установках Windows; выбрать одну для запуска'
+    installation: EnumProperty(name='Версия Revit', items=revit_installations)
+
+    def invoke(self, context, event):
+        global _REVIT_ITEMS
+        from .core.revit_versions import discover
+        found = discover()
+        _REVIT_ITEMS = [(row['path'], f"Revit {row['year']} · {row['version']}", row['path']) for row in found]
+        if not found:
+            self.report({'INFO'}, 'Установки не найдены. Укажите путь Revit.exe вручную в основной панели.')
+            return {'CANCELLED'}
+        current = bpy.path.abspath(context.scene.xivgate_revit_bridge.revit_exe)
+        self.installation = next((row['path'] for row in found if row['path'] == current), found[0]['path'])
+        return context.window_manager.invoke_props_dialog(self, width=650)
+
+    def draw(self, context):
+        self.layout.prop(self, 'installation')
+        for line in textwrap.wrap(self.installation, 90):
+            self.layout.label(text=line)
+        self.layout.label(text='Будет запущена только выбранная версия Revit.')
+        self.layout.label(text='Для других установок используйте ручной путь в основной панели.')
+
+    def execute(self, context):
+        props = context.scene.xivgate_revit_bridge
+        if props.busy or runtime.MAINTENANCE:
+            return {'CANCELLED'}
+        from .core.revit_versions import inspect_revit
+        try:
+            props.revit_exe = inspect_revit(self.installation)['path']
+        except (OSError, ValueError) as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+        return {'FINISHED'}
 
 
 def release_items(self, context):
@@ -163,8 +206,6 @@ class RBB_Settings(bpy.types.PropertyGroup):
     category_index: IntProperty()
     workset_index: IntProperty()
     type_index: IntProperty()
-    preview_only_unselected: BoolProperty(name='Рамки только неотмеченных', default=False,
-        description='Ограничить предпросмотр элементами активной строки, у которых снята галочка импорта')
     selected_count: IntProperty()
     busy: BoolProperty(default=False, options={'SKIP_SAVE'})
     status: StringProperty(default='IDLE', options={'SKIP_SAVE'})
@@ -222,6 +263,7 @@ class RBB_UL_groups(bpy.types.UIList):
         toggle.kind, toggle.group_id = item.group_kind, item.group_id
         row.label(text=item.name)
         row.label(text=f'{item.selected_count}/{item.count}' + (' · частично' if state == 'partial' else ''))
+        preview_button(row, data, item.group_kind, item.group_id, item.name)
 
     def filter_items(self, context, data, propname):
         props = context.scene.xivgate_revit_bridge
@@ -237,6 +279,7 @@ class RBB_UL_elements(bpy.types.UIList):
         symbol = 'CHECKMARK' if item.recommendation == 'include' else 'QUESTION' if item.recommendation == 'review' else 'REMOVE'
         row.label(text=item.name or item.element_id, icon=symbol)
         row.label(text=item.category_name)
+        preview_button(row, data, 'element', item.element_id, item.name or item.element_id)
 
     def filter_items(self, context, data, propname):
         props = context.scene.xivgate_revit_bridge
@@ -529,77 +572,115 @@ class RBB_OT_cache(bpy.types.Operator):
             return {'CANCELLED'}
 
 
-class RBB_OT_preview(bpy.types.Operator):
-    bl_idname = 'xivgate_rbb.preview_bounds'
-    bl_label = 'Показать границы группы'
-    bl_description = 'Показать в сцене рамки выбранной строки или группы по каталогу Revit без загрузки геометрии'
-    bl_options = {'REGISTER', 'UNDO'}
+def preview_group_key(props, kind, identifier):
+    return json.dumps([props.catalog_source, kind, identifier], ensure_ascii=True)
 
-    def execute(self, context):
-        import json
-        from .spatial_preview import preview_bounds
-        props = context.scene.xivgate_revit_bridge
+
+def preview_button(layout, props, kind, identifier, name):
+    from .spatial_preview import has_preview
+    shown = has_preview(props.id_data, preview_group_key(props, kind, identifier))
+    button = layout.operator('xivgate_rbb.toggle_preview', text='',
+        icon='HIDE_OFF' if shown else 'SHADING_BBOX', depress=shown)
+    button.kind, button.group_id, button.group_name = kind, identifier, name
+
+
+def catalog_preview_offset(props):
+    if props.origin_valid and props.import_source == props.catalog_source:
+        return json.loads(props.source_offset_json) if props.origin_centered else (0, 0, 0)
+    if not props.center_model:
+        return (0, 0, 0)
+    import math
+    minimum, maximum = [math.inf] * 3, [-math.inf] * 3
+    for row in props.elements:
+        if not row.bbox_json:
+            continue
         try:
-            candidates, explanation = preview_rows(props)
-            if explanation:
-                self.report({'INFO'}, explanation)
-                return {'CANCELLED'}
-            rows = []
-            for row in candidates:
-                if row.bbox_json and (not props.preview_only_unselected or not row.selected):
-                    minimum, maximum = json.loads(row.bbox_json)
-                    rows.append(dict(id=row.element_id, name=row.name, bbox_min=minimum, bbox_max=maximum))
-            if not rows:
-                self.report({'INFO'}, 'Нет доступных рамок для активной строки')
-                return {'CANCELLED'}
-            offset = json.loads(props.source_offset_json) if props.origin_valid and props.origin_centered else (0, 0, 0)
-            result = preview_bounds(context.scene, rows, offset)
-            # Follow a deliberately moved imported root, without changing the user's view.
-            if result['object_name'] and props.result_collection in bpy.data.collections:
-                root = next((obj for obj in bpy.data.collections[props.result_collection].objects
-                             if obj.type == 'EMPTY' and 'revit:source_offset_metres' in obj), None)
-                if root is not None:
-                    bpy.data.objects[result['object_name']].matrix_world = root.matrix_world
-            self.report({'INFO'}, f"Показано границ: {result['shown']} из {result['total']}; геометрия не загружалась")
-            return {'FINISHED'}
-        except Exception as error:
-            self.report({'ERROR'}, str(error))
-            return {'CANCELLED'}
+            low, high = json.loads(row.bbox_json)
+            if len(low) != 3 or len(high) != 3:
+                continue
+            if not all(math.isfinite(float(a)) and math.isfinite(float(b)) and a <= b for a, b in zip(low, high)):
+                continue
+            for axis in range(3):
+                minimum[axis] = min(minimum[axis], low[axis])
+                maximum[axis] = max(maximum[axis], high[axis])
+        except (ValueError, TypeError):
+            continue
+    return tuple(a/2 + b/2 for a, b in zip(minimum, maximum)) if math.isfinite(minimum[0]) else (0, 0, 0)
 
 
-def preview_rows(props):
-    if not props.origin_valid and props.center_model:
-        return [], 'Сначала импортируйте основной набор для совмещения рамок с моделью.'
-    if props.list_mode == 'elements':
-        rows = [props.elements[props.element_index]] if 0 <= props.element_index < len(props.elements) else []
-        rows = [row for row in rows if matches(row, query=props.search, scope_kind=props.scope_kind,
-                                               scope_id=props.scope_id, status=props.selection_filter)]
-    else:
-        group = active_group(props)
-        rows = [row for row in props.elements if group is not None and getattr(row, group.group_kind + '_id') == group.group_id]
-    if not rows:
-        return [], 'Выберите строку в списке выше: рамки показываются для активной строки.'
-    if not any(row.bbox_json for row in rows):
-        return [], 'В этом списке нет данных рамок. Нажмите «Получить список» заново.'
-    if props.preview_only_unselected:
-        rows = [row for row in rows if not row.selected]
-        if not rows:
-            return [], 'В активной строке всё отмечено. Отключите «Рамки только неотмеченных».'
-    rows = [row for row in rows if row.bbox_json]
-    return (rows, '') if rows else ([], 'У неотмеченных элементов нет рамок; получите новый список или отключите фильтр.')
+def imported_root(scene, props):
+    collection = bpy.data.collections.get(props.result_collection)
+    if (collection is None or collection not in scene.collection.children_recursive
+            or props.import_source != props.catalog_source):
+        return None
+    return next((obj for obj in collection.objects if obj.type == 'EMPTY'
+                 and 'revit:source_offset_metres' in obj), None)
 
 
-class RBB_OT_clear_preview(bpy.types.Operator):
-    bl_idname = 'xivgate_rbb.clear_preview'
-    bl_label = 'Убрать границы'
-    bl_description = 'Удалить только вспомогательные рамки предпросмотра AGR Revit Bridge; модель сохраняется'
+def frame_preview(context, obj):
+    # Explicit preview clicks frame their layer without changing selected objects.
+    space = context.space_data
+    if space is None or space.type != 'VIEW_3D' or space.region_3d is None:
+        return
+    from mathutils import Vector
+    context.view_layer.update()
+    corners = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
+    low = Vector(tuple(min(point[axis] for point in corners) for axis in range(3)))
+    high = Vector(tuple(max(point[axis] for point in corners) for axis in range(3)))
+    space.region_3d.view_location = (low + high) / 2
+    space.region_3d.view_distance = max((high - low).length, .5)
+
+
+class RBB_OT_toggle_preview(bpy.types.Operator):
+    bl_idname = 'xivgate_rbb.toggle_preview'
+    bl_label = 'Превью границ слоя'
+    bl_description = 'Показать или убрать рамки всех элементов этой строки независимо от галочек импорта; модель не загружается'
     bl_options = {'REGISTER', 'UNDO'}
+    kind: StringProperty()
+    group_id: StringProperty()
+    group_name: StringProperty()
+
+    @classmethod
+    def description(cls, context, properties):
+        return ('Показать/скрыть рамки слоя «' + properties.group_name +
+                '». Работает до импорта и не зависит от выбранной строки или галочек. '
+                'Повторное нажатие убирает только это превью; при показе вид приближается к слою.')
 
     def execute(self, context):
-        from .spatial_preview import clear_preview
-        clear_preview(context.scene)
-        return {'FINISHED'}
-
+        from .spatial_preview import has_preview, clear_preview, preview_bounds, align_previews
+        props = context.scene.xivgate_revit_bridge
+        if props.busy or runtime.MAINTENANCE or self.kind not in ('category', 'workset', 'type', 'element'):
+            return {'CANCELLED'}
+        key = preview_group_key(props, self.kind, self.group_id)
+        if has_preview(context.scene, key):
+            clear_preview(context.scene, key)
+            return {'FINISHED'}
+        field = 'element_id' if self.kind == 'element' else self.kind + '_id'
+        candidates = [row for row in props.elements if getattr(row, field) == self.group_id]
+        rows = []
+        for row in candidates:
+            if row.bbox_json:
+                try:
+                    low, high = json.loads(row.bbox_json)
+                    rows.append(dict(id=row.element_id, bbox_min=low, bbox_max=high))
+                except (ValueError, TypeError):
+                    pass
+        if not rows:
+            self.report({'INFO'}, 'В каталоге нет габаритов этого слоя. Нажмите «Получить список» заново; некоторые служебные элементы не имеют габаритов.')
+            return {'CANCELLED'}
+        try:
+            offset = catalog_preview_offset(props)
+            result = preview_bounds(context.scene, rows, offset, limit=len(rows), group_key=key, label=self.group_name)
+            if not result['object_name']:
+                self.report({'INFO'}, 'У элементов этого слоя нет корректных габаритов для превью')
+                return {'CANCELLED'}
+            align_previews(context.scene, offset, imported_root(context.scene, props))
+            frame_preview(context, bpy.data.objects[result['object_name']])
+            self.report({'INFO'}, f"Превью «{self.group_name}»: {result['shown']} рамок; повторная кнопка скрывает этот слой")
+            return {'FINISHED'}
+        except (ValueError, TypeError) as error:
+            self.report({'INFO'}, 'Не удалось показать превью: ' + str(error))
+            return {'CANCELLED'}
 
 
 class RBB_OT_check_update(bpy.types.Operator):
@@ -663,9 +744,10 @@ class RBB_PT_panel(bpy.types.Panel):
         files = layout.column()
         files.enabled = not props.busy and not runtime.MAINTENANCE
         files.prop(props, 'source_rvt')
+        files.prop(props, 'revit_exe')
+        files.operator('xivgate_rbb.choose_revit', text='Найти и выбрать версию Revit', icon='VIEWZOOM')
         row = files.row(align=True)
         row.operator('xivgate_rbb.scan', text='Получить список', icon='VIEWZOOM')
-        layout.label(text='Ранний доступ ' + updater.current_version(), icon='EXPERIMENTAL')
         box = layout.box()
         icon = 'ERROR' if props.status == 'ERROR' else 'QUESTION' if props.status == 'REQUIRES_ACTION' else 'INFO'
         for index, line in enumerate(textwrap.wrap(props.message, width=48)[:8]):
@@ -736,17 +818,6 @@ class RBB_PT_panel(bpy.types.Panel):
                 action.mode, action.scope = mode, 'model'
             selection.label(text=f'Отмечено для импорта: {props.selected_count} из {len(props.elements)}')
             selection.label(text='Это выбор, не число полученных мешей.')
-            selection.label(text='Рамки активной строки списка:')
-            selection.prop(props, 'preview_only_unselected')
-            frames, explanation = preview_rows(props)
-            if explanation:
-                for line in textwrap.wrap(explanation, 48):
-                    selection.label(text=line)
-            row = selection.row(align=True)
-            show = row.row(align=True)
-            show.enabled = bool(frames)
-            show.operator('xivgate_rbb.preview_bounds', text=f'Показать рамки ({len(frames)})', icon='SHADING_BBOX')
-            row.operator('xivgate_rbb.clear_preview', text='Убрать', icon='X')
         options = layout.column()
         options.enabled = not props.busy and not runtime.MAINTENANCE
         options.prop(props, 'preserve_instances')
@@ -754,7 +825,6 @@ class RBB_PT_panel(bpy.types.Panel):
         options.prop(props, 'import_textures')
         options.prop(props, 'show_advanced', icon='TRIA_DOWN' if props.show_advanced else 'TRIA_RIGHT', emboss=False)
         if props.show_advanced:
-            options.prop(props, 'revit_exe')
             options.prop(props, 'cache_directory', text='Кэш (пусто — автоматически)')
             options.prop(props, 'reuse_export_cache')
             options.operator('xivgate_rbb.setup_revit', icon='PLUGIN')
@@ -811,9 +881,10 @@ def _load_pre(*args):
 
 
 CLASSES = (RBB_Element, RBB_Group, RBB_Warning, RBB_Settings, RBB_UL_groups, RBB_UL_elements, RBB_UL_warnings, RBB_OT_warnings,
+           RBB_OT_choose_revit,
            RBB_OT_toggle_group, RBB_OT_inspect_group, RBB_OT_clear_scope, RBB_OT_copy_report_details, RBB_OT_readable_names,
            RBB_OT_setup, RBB_OT_scan, RBB_OT_import, RBB_OT_select, RBB_OT_cancel,
-           RBB_OT_show_worker, RBB_OT_cache, RBB_OT_preview, RBB_OT_clear_preview, RBB_OT_check_update, RBB_OT_install_update, RBB_PT_panel)
+           RBB_OT_show_worker, RBB_OT_cache, RBB_OT_toggle_preview, RBB_OT_check_update, RBB_OT_install_update, RBB_PT_panel)
 
 
 def register():

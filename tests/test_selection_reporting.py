@@ -41,4 +41,3 @@ class SelectionReportingTests(unittest.TestCase):
         result = report_entries(['Не найдена текстура: a.jpg', 'Не найдена текстура: b.jpg', 'Ошибка Revit'])
         self.assertEqual(len(result), 3)
         self.assertTrue(all(row['severity'] == 'WARNING' for row in result))
-

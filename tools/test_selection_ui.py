@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import time
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import bpy
 
@@ -22,6 +23,13 @@ tooltip = ui.RBB_OT_select.description(None, SimpleNamespace(mode='all', scope='
 assert 'показанных строках' in tooltip and 'поиска' in tooltip
 
 props = bpy.context.scene.xivgate_revit_bridge
+original_exe = props.revit_exe
+test_exe = str(Path(os.environ['RBB_TEST_ROOT']) / 'fixture' / 'Revit.exe')
+ui._REVIT_ITEMS = [(test_exe, 'Revit 2026 (fixture)', test_exe)]
+with patch('xivgate_revit_bridge.core.revit_versions.inspect_revit', return_value={'path': test_exe}):
+    assert bpy.ops.xivgate_rbb.choose_revit(installation=test_exe) == {'FINISHED'}
+assert props.revit_exe == test_exe
+props.revit_exe = original_exe
 ui._SYNCING = True
 for index in range(5380):
     row = props.elements.add()
@@ -39,6 +47,10 @@ group.group_id, group.group_kind, group.name = 'walls', 'category', 'Стены'
 ui._SYNCING = False
 ui.sync_groups(props)
 assert group.selected_count == 4710 and group.count == 5380
+props.search = 'Нет такой группы'
+assert ui.active_group(props) is None
+assert bpy.ops.xivgate_rbb.inspect_group() == {'CANCELLED'}
+props.search = ''
 
 class Layout:
     def __init__(self):
@@ -54,7 +66,8 @@ class Layout:
 layout = Layout()
 ui.RBB_UL_groups.draw_item(None, bpy.context, layout, props, group, 0, props, 'category_index', 0)
 assert layout.calls[0][1]['icon'] == 'REMOVE'
-assert 'частично' in layout.calls[-1][1]['text']
+assert any('частично' in call[1].get('text', '') for call in layout.calls)
+assert layout.calls[-1][0] == 'xivgate_rbb.toggle_preview'
 assert bpy.ops.xivgate_rbb.inspect_group() == {'FINISHED'}
 assert props.list_mode == 'elements' and props.scope_id == 'walls' and props.selection_filter == 'excluded'
 assert props.elements[props.element_index].selected is False

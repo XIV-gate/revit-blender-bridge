@@ -159,3 +159,28 @@ sameBlenderprocess→newUI and repairedregistration PASS5.2.3+4.2.14. Newupdater
 recovers the stale pointer during a verified release transition. No Preferences
 saved and no live profile writes. All6 worker assemblies rebuilt0.3.2.0; only
 assembly version changed in C#.
+
+
+## Unified stable 0.4.0 — 2026-10-30
+
+- 103 ordinary Python tests passed; one Windows symlink privilege skip.
+- All six Revit workers rebuilt; API baseline/CLR unification caveat for the
+  2025/2026 net10 variants remains documented. No new live RVT conversion run.
+- Actual isolated Blender 5.2.3 and 4.2.14: full controller/converter, reversible
+  composition, delta-only export with exact linked Mesh reuse, ambiguous/empty
+  delta fallback, verified cache after worker shutdown and unpacked image protection.
+- Per-row previews: both hosts passed pre-import operation, 1001 boxes without
+  truncation, independent groups, unchanged import checkbox/active row, origin
+  correction, moved parent, shared-scene guards and missing-bounds diagnostics.
+- Selection report and native editable Mesh naming passed on both supported hosts;
+  custom names and foreign shared data retained. Registry candidates are validated,
+  deduplicated and sorted; actual local discovery found Revit 2027 build27.2.0.39.
+- Final ZIP installation and scan invoke path, updater hot reload, graceful shutdown,
+  locked DLL, rollback/downgrade, no Preferences saves passed on both hosts.
+- Real ZIP 0.3.0 -> 0.4.0 manual migration and 0.4.0 -> 0.3.2 -> 0.4.0 updater
+  switching passed in isolated Blender 5.2.3; prior 4.2 migration coverage retained.
+- Package SHA256: e61c44e775f8612e2156d13174404a5bdd7460b9f71993d9f3d43c5a978aeb8a.
+- Full real-model import was previously checked on Revit2027. Full Revit2024–2026
+  operation is not claimed as tested; API builds and common tests are not substitutes.
+- Unsigned publisher trust remains a native Revit user decision. No trust settings
+  were changed, no certificate installed and no security prompt automated.

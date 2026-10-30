@@ -3,6 +3,8 @@ import json
 import os
 from pathlib import Path
 import sys
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import bpy
 import addon_utils
@@ -20,6 +22,15 @@ assert module is not None
 assert hasattr(bpy.context.scene, 'xivgate_revit_bridge')
 from xivgate_revit_bridge.runtime import worker_path
 assert worker_path().is_file()
+with patch.object(module.ui.workflow, 'prepare_settings', return_value=root), \
+        patch.object(module.runtime, 'setup_plan', return_value={'path': str(root / 'fixture.addin')}), \
+        patch.object(module.runtime, 'manifest_matches', return_value=True), \
+        patch.object(module.runtime, 'begin_scan') as scan:
+    operator = SimpleNamespace(report=lambda level, text: (_ for _ in ()).throw(AssertionError(text)))
+    operator.execute = lambda context: module.ui.RBB_OT_scan.execute(operator, context)
+    assert module.ui.RBB_OT_scan.invoke(operator, bpy.context, None) == {'FINISHED'}
+    assert bpy.ops.xivgate_rbb.scan('INVOKE_DEFAULT') == {'FINISHED'}
+    assert scan.call_count == 2
 assert Path(module.__file__).resolve().is_relative_to(Path(os.environ['BLENDER_USER_SCRIPTS']).resolve())
 addon_utils.disable('xivgate_revit_bridge', default_set=False)
 assert not hasattr(bpy.context.scene, 'xivgate_revit_bridge')

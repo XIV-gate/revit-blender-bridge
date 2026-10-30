@@ -93,30 +93,12 @@ assert len(props.types) == 2
 props.list_mode = 'types'
 props.type_index = next(index for index, group in enumerate(props.types) if 'Window type' in group.name)
 props.elements[1].selected = False
-props.preview_only_unselected = True
-from xivgate_revit_bridge import ui
-rows, reason = ui.preview_rows(props)
-assert len(rows) == 1 and not reason
-saved_bounds = {row.element_id: row.bbox_json for row in props.elements}
-for row in props.elements:
-    row.bbox_json = ''
-rows, reason = ui.preview_rows(props)
-assert not rows and 'Получить список' in reason
-for row in props.elements:
-    row.bbox_json = saved_bounds[row.element_id]
-props.elements[1].selected = True
-rows, reason = ui.preview_rows(props)
-assert not rows and 'всё отмечено' in reason
-props.preview_only_unselected = False
-rows, reason = ui.preview_rows(props)
-assert len(rows) == 2 and not reason
-props.elements[1].selected = False
-props.preview_only_unselected = True
-assert bpy.ops.xivgate_rbb.preview_bounds() == {'FINISHED'}
+group = props.types[props.type_index]
+assert bpy.ops.xivgate_rbb.toggle_preview(kind='type', group_id=group.group_id, group_name=group.name) == {'FINISHED'}
 from xivgate_revit_bridge.spatial_preview import PREVIEW_TAG
 preview = [obj for obj in scene.objects if obj.get(PREVIEW_TAG)]
-assert len(preview) == 1 and len(preview[0].data.vertices) == 8
-assert bpy.ops.xivgate_rbb.clear_preview() == {'FINISHED'}
+assert len(preview) == 1 and len(preview[0].data.vertices) == 16
+assert bpy.ops.xivgate_rbb.toggle_preview(kind='type', group_id=group.group_id, group_name=group.name) == {'FINISHED'}
 assert not any(obj.get(PREVIEW_TAG) for obj in scene.objects)
 
 # Finish two artificial jobs. The unpacked image protects one; the other is disposable.

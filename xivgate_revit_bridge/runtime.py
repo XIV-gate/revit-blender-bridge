@@ -169,6 +169,8 @@ def begin_scan(scene, *, auto_import=False):
     STATE.scanned_source_hash = source_sha256(source)
     STATE.previous_selection = previous
     STATE.auto_import = auto_import
+    from .spatial_preview import clear_preview
+    clear_preview(scene)
     props.elements.clear()
     props.categories.clear()
     props.worksets.clear()
@@ -378,6 +380,10 @@ def _apply_import():
     props.origin_valid = True
     props.origin_centered = STATE.pending_options['center_model']
     props.result_collection = result['collection']
+    from .spatial_preview import align_previews
+    from .ui import imported_root
+    align_previews(STATE.scene, result['source_offset'] if props.origin_centered else (0, 0, 0),
+                   imported_root(STATE.scene, props))
     _warnings(raw_values(props.warnings) + ['Недоступно изображение: ' + path for path in result['missing_images']])
     props.result_placements = result['placements']
     props.result_prototypes = result['prototypes']
