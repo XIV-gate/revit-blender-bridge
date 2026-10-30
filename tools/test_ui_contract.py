@@ -19,7 +19,7 @@ for cls in tree.body:
     if isinstance(cls, ast.ClassDef):
         methods = [node.name for node in cls.body if isinstance(node, ast.FunctionDef)]
         assert len(methods) == len(set(methods)), cls.name
-for name in ('RBB_OT_cache', 'RBB_OT_preview', 'RBB_OT_clear_preview', 'RBB_OT_scan'):
+for name in ('RBB_OT_cache', 'RBB_OT_toggle_preview', 'RBB_OT_choose_revit', 'RBB_OT_scan'):
     assert hasattr(getattr(addon.ui, name), 'execute')
 addon.unregister()
 print('AGR_UI_CONTRACT passed', bpy.app.version_string)

@@ -1,58 +1,155 @@
 # AGR Revit Bridge
 
-**Единая стабильная сборка 0.4.0:** все текущие функции доступны в последнем стабильном релизе. Ранний доступ предназначен только для будущих экспериментов.
+Аддон Blender для локального импорта моделей Revit с выбором нужных элементов.
+Можно перенести фасад, окна и наружные детали, исключить лишнее, сохранить
+редактируемые инстансы, материалы и доступные текстуры, а затем менять состав
+модели без повторной загрузки всего проекта, когда это позволяет состав элементов.
 
-Version 0.4.0 Stable, developed by XIVgate. Import selected Revit geometry from Blender: choose an RVT, scan categories/worksets/elements, and import or reimport with shared prototypes and materials. The panel is alongside AGR Prepare, AGR Output and AGR Collision in the **AGR** sidebar tab.
+- Текущая стабильная версия: **0.4.0**.
+- Blender: **4.2+**, проверены **4.2.14 LTS** и **5.2.3 LTS**.
+- Обработчики Revit: **2024–2027**, включая варианты .NET 8/.NET 10.
+- Требуются Windows и установленный активированный Revit. Revit LT не подходит.
+- Автор и разработчик: **XIVgate**. Панель: **N → AGR → AGR Revit Bridge**.
 
-[Download the latest release](https://github.com/XIV-gate/revit-blender-bridge/releases/latest).
+**[Скачать последнюю стабильную версию](https://github.com/XIV-gate/revit-blender-bridge/releases/latest)**
+· [Все версии](https://github.com/XIV-gate/revit-blender-bridge/releases)
+· [Инструкция](docs/USER_GUIDE_RU.md)
+· [Решение проблем](docs/TROUBLESHOOTING_RU.md)
+· [Изменения 0.4.0](docs/RELEASE_NOTES_0_4_0.md)
 
-Revit is a required local processing host. The companion Revit add-in runs API calls on Revit's main thread. No cloud conversion or desktop input automation is used. Original RVT files are copied before opening; upgrades apply only to the copy. Unknown dialogs are reported as requiring user action.
+## Установка и обновление
 
-The bundled worker targets Revit 2024–2027 (.NET Framework 4.8, .NET 8 and .NET 10). Blender 5.2 LTS is the primary host, tested with 5.2.3; additional compatibility is tested with 4.2.14 LTS. Other Revit versions require a separately built and validated worker. The live old-model smoke test is tracked separately in [verification](docs/VERIFICATION.md); synthetic controller tests do not replace it.
+1. На странице релиза скачайте **`agr_revit_bridge-0.4.0.zip`** из раздела Assets.
+   `Source code.zip` и `Source code.tar.gz` не являются установочными пакетами.
+2. В Blender откройте **Edit → Preferences → Add-ons → меню → Install from Disk**.
+   В разных версиях Blender меню может находиться рядом с Get Extensions.
+3. Выберите ZIP целиком и включите **AGR Revit Bridge**.
+4. Откройте **3D Viewport → N → AGR → AGR Revit Bridge**.
 
-[Инструкция для пользователя](docs/USER_GUIDE_RU.md).
+Для обновлений нажмите **«Получить версии» → «Стабильные» → версия → «Установить»**.
+GitHub-аккаунт и токен не нужны. Для встроенного обновителя нужен разрешённый
+Online Access в Blender. Проверяются контрольные суммы пакета и его файлов.
+Настройки сцены сохраняются; Preferences аддон сам не записывает.
 
-Install `agr_revit_bridge-0.4.0.zip` through **Preferences → Add-ons → Install from Disk**.
-For later versions, use **Check for Updates / Install Update** in the panel. The
-updater reads the published stable and Early Access releases from this repository; you select an exact version, including a previous one. It
-verifies GitHub's archive SHA256 and every managed file, then reloads the add-on.
-Scene data, settings and Preferences are preserved. Revit worker binaries use
-separate version folders so an older DLL held by a running Revit is not replaced.
-Unknown/foreign Revit registrations are never overwritten.
+Если старый обновитель уже заблокирован ошибкой DLL, один раз установите новый
+ZIP через Install from Disk. Новая версия восстановит свою регистрацию Revit;
+вручную редактировать `.addin` не требуется. При необходимости выключите и
+включите аддон после замены ZIP. [Подробнее об установке](docs/USER_GUIDE_RU.md#установка-и-первый-импорт).
 
-See [update design and release procedure](docs/UPDATES.md) and
-[0.3.0 release notes](docs/RELEASE_NOTES_0_3_0.md). A public release is required
-for anonymous updates; private drafts are deliberately not offered as updates.
+## Быстрый запуск
 
-Source layout: `core/` contains host-independent selection/jobs/installer/launcher;
-`runtime.py` controls asynchronous work; `ui.py` contains Blender UI;
-`updater.py` coordinates background downloads and main-thread reload;
-`conversion.py` builds USD with bundled Python; `blender_import.py` validates
-placements and replaces owned revisions; `revit_worker/` contains the C# exporter.
+1. Сохраните `.blend` и укажите **Файл RVT** в панели аддона.
+2. Проверьте **Revit.exe**: выберите вручную либо нажмите
+   **«Найти и выбрать версию Revit»**. В списке показаны версия и полный путь.
+3. Нажмите **«Получить список»**. При первом подключении подтвердите показанные
+   пути рабочей папки и локального обработчика.
+4. В списке категорий, рабочих наборов, типов или объектов отметьте нужное.
+   Для спорных элементов откройте **«Показать исключённые»** и прочитайте причину.
+5. Нажмите **«Импортировать выбранное»**.
+6. Чтобы изменить состав, поменяйте галочки и нажмите **«Обновить импорт»**.
 
-Build using `revit_worker/build.ps1 -OutputDir <approved-existing-directory>`,
-then `python tools/build_package.py --workers-root <six-variant-build-directory> --output <fresh.zip>`.
-Only XIVgate workers and required Microsoft runtime libraries are included; Autodesk SDK assemblies are not redistributed.
+Самостоятельно готовить экспортный вид в Revit или запускать Dynamo не нужно.
+Аддон запускает отдельный локальный Revit, работает с копией RVT и возвращает
+результат в Blender. Исходный RVT не сохраняется поверх оригинала. Неизвестные
+вопросы Revit, лицензия и доверие к DLL могут потребовать ответа пользователя.
 
-Pure tests: set `XIVGATE_TEST_ROOT` to an explicitly approved existing directory,
-disable bytecode, then run `python -m unittest discover -s tests`.
-Host tests: `python tools/run_blender_test.py --blender <blender.exe> --workspace
-<approved-existing-directory-on-D:>`; use `--script test_controller_integration.py`
-to exercise the real converter subprocess with a test-only Revit I/O double.
-For isolated ZIP installation set `RBB_PACKAGE_NAME` to the filename below that
-workspace and use `--script test_package_install.py`. Tests never save Preferences.
-Use `--script test_update_integration.py` to test verified installation, hot reload,
-locked old DLLs, Revit registration migration, failed-release rollback, and
-cancellation on file load with an injected network transport in the isolated profile.
+## Выбор того, что импортировать
 
-See [design](docs/DESIGN.md), [protocol](docs/PROTOCOL.md), and [implementation plan](docs/PLAN.md).
+Категории, рабочие наборы, типы и объекты — разные представления одного выбора.
+Число **4710/5380 · частично** означает: отмечено 4710 элементов из 5380.
+Это не число уже созданных мешей.
 
+Плагин предлагает начальный набор для фасада, но не распознаёт наружную оболочку
+безошибочно. Например, внутреннюю стену он может предположить по имени её типа.
+Под активной группой видны причины исключения и количество элементов.
+**«Показать исключённые»** открывает именно неотмеченные элементы этой группы;
+у отдельного объекта доступны тип, ID и причина рекомендации.
 
+| Действие | Область действия |
+|---|---|
+| Галочка отдельного объекта | Только этот элемент |
+| Переключатель группы | Вся категория, рабочий набор или тип |
+| «Выбрать показанные» | Строки после поиска и фильтра |
+| «Выбрать всю группу» | Все элементы текущей группы |
+| «Выбор во всей модели» | Весь каталог модели |
+| «Рекомендуемые» | Возвращает предложенный набор вместо ручного выбора |
 
-Current stable 0.4.0 includes reversible local selection, safe delta imports,
-verified export cache, type search, bounds previews, explicit Revit executable
-selection, readable Mesh/object names and compact diagnostics. Future experiments
-are developed in early-access and promoted to main after verification.
-See [0.4.0 release notes](docs/RELEASE_NOTES_0_4_0.md).
+Рекомендация не запрещает импорт: её можно переопределить. Поиск сам не меняет
+галочки. [Подробности отбора](docs/USER_GUIDE_RU.md#выбор-до-импорта).
 
-Release cadence: **0.4.0 stable → 0.4.1/0.4.2… Early Access fixes → 0.5.0 stable after verification**.
+## Превью у каждого слоя
+
+Справа у каждой строки есть кнопка рамок. Она показывает габариты **этого слоя**
+и приближает вид к ним. Повторное нажатие выключает только это превью.
+Можно показывать несколько слоёв одновременно.
+
+Не нужно предварительно выделять строку, менять галочки или импортировать модель.
+Превью не загружает сетки из Revit и не меняет состав импорта. Если в старом
+каталоге нет габаритов, получите список заново. Служебные элементы могут не иметь
+габаритов. [Как пользоваться превью](docs/USER_GUIDE_RU.md#превью-каждого-слоя).
+
+## Инстансы, имена и повторный импорт
+
+**«Сохранять инстансы»** создаёт обычные Mesh-объекты с общими данными, как Alt+D.
+Выберите окно прямо на фасаде и редактируйте в Edit Mode: экземпляры с тем же
+Mesh изменятся вместе. Их положение, поворот и масштаб независимы.
+
+Объекты и Mesh получают читаемые имена по категории, семейству, типу и ID/варианту.
+Кнопка **«Обновить имена объектов и мешей»** исправляет старые служебные имена без
+повторного импорта. Пользовательские имена и чужие общие данные сохраняются.
+
+Уже загруженные элементы можно временно выключать и возвращать локально.
+Новые элементы по возможности добавляются отдельно, а совпадающие меши и материалы
+используются повторно. Для зависимых и составных элементов выполняется полная
+выгрузка, когда частичное добавление небезопасно. Полная перевыгрузка может
+заменить ручные правки импортированной геометрии. Собственные объекты сохраняются.
+
+## Материалы и рабочая папка
+
+Переносятся базовые материалы, UV и найденные изображения. Недоступную исходную
+текстуру аддон восстановить не может. Для передачи `.blend` включите упаковку
+изображений и сохраните сцену обычным способом.
+
+По умолчанию рабочие данные находятся рядом с `.blend`: **Data/Cache/RevitBridge**.
+Там хранятся копия RVT, выгрузка, текстуры и журналы. Для несохранённой сцены
+укажите папку в «Настройках». Вся обработка модели локальная; сеть используется
+для проверки GitHub Releases и скачивания обновлений.
+
+## Совместимость и ограничения
+
+| Компонент | Проверка |
+|---|---|
+| Blender 5.2.3 LTS | Изолированные проверки установки, импорта, обновления и интерфейса |
+| Blender 4.2.14 LTS | Те же основные сценарии и совместимость |
+| Revit 2027 | Ранее выполнен полный импорт реальной модели |
+| Revit 2024–2026 | Собраны обработчики с API соответствующего года и проверена общая логика; полный импорт в этих версиях ещё не запускался |
+
+- Нельзя открыть RVT новой версии в старом Revit. Обновление старой модели
+  выполняется только в рабочей копии.
+- Геометрия связанных RVT пока не включается; сложные RPC могут быть недоступны.
+- Полное совпадение материалов с рендерером Revit не гарантируется.
+- Обработчик пока без цифровой подписи издателя. Revit может запросить доверие;
+  аддон не подтверждает его автоматически и не меняет доверенные издатели.
+- Это не облачный конвертер и не автономный читатель RVT: локальный Revit обязателен.
+
+[Результаты проверок](docs/VERIFICATION.md) · [Ограничения и диагностика](docs/TROUBLESHOOTING_RU.md).
+
+## Версии
+
+**0.4.0 — стабильная сборка со всеми текущими функциями.**
+Исправления **0.4.1, 0.4.2…** выходят в раннем доступе. После проверки и доводки
+следующая стабильная версия — **0.5.0**. Для обычной работы выбирайте «Стабильные»;
+старые тестовые версии не являются обязательными шагами установки.
+
+## Документация и обратная связь
+
+- [Полная инструкция](docs/USER_GUIDE_RU.md)
+- [Типовые проблемы и ответы](docs/TROUBLESHOOTING_RU.md)
+- [Содержание документации](docs/README.md)
+- [История и описание 0.4.0](docs/RELEASE_NOTES_0_4_0.md)
+- [Разработка и сборка](docs/DEVELOPMENT.md)
+- [Сообщить об ошибке](https://github.com/XIV-gate/revit-blender-bridge/issues)
+
+Для сообщения об ошибке укажите версии Blender/Revit/аддона, шаги и текст ошибки.
+Не прикладывайте целиком рабочую папку: в ней находится копия проекта.
+Публичная лицензия проекта пока не объявлена.
