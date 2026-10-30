@@ -186,7 +186,7 @@ class RBB_Settings(bpy.types.PropertyGroup):
     center_model: BoolProperty(name='Разместить около начала координат', default=True, description='Убрать большое смещение координат Revit; исходное смещение сохраняется в данных импорта')
     load_links: BoolProperty(default=False)
     detail_level: EnumProperty(name='Детализация', items=[('coarse', 'Низкая', ''), ('medium', 'Средняя', ''), ('fine', 'Высокая', '')], default='medium')
-    show_advanced: BoolProperty(name='Настройки', default=False, description='Показать путь Revit, рабочую папку, детализацию и дополнительные действия')
+    show_advanced: BoolProperty(name='Настройки', default=False, description='Подключение Revit, параметры импорта и рабочие данные — каждый в своём разделе')
     list_mode: EnumProperty(name='Показать', items=[('categories', 'Категории', 'Группировать элементы по категориям Revit'),
         ('worksets', 'Рабочие наборы', 'Группировать элементы по рабочим наборам Revit'),
         ('types', 'Типы', 'Группировать по семейству и типу; один тип можно включить целиком'),
@@ -731,6 +731,36 @@ class RBB_OT_install_update(bpy.types.Operator):
             return {'CANCELLED'}
 
 
+def draw_settings(layout, props):
+    connection = layout.box()
+    connection.label(text='Подключение Revit', icon='PLUGIN')
+    connection.prop(props, 'revit_exe', text='Программа Revit')
+    row = connection.row(align=True)
+    row.operator('xivgate_rbb.choose_revit', text='Автопоиск Revit', icon='VIEWZOOM')
+    row.operator('xivgate_rbb.setup_revit', text='Подключить Revit', icon='PLUGIN')
+    if runtime.STATE.worker is not None:
+        connection.operator('xivgate_rbb.cancel', text='Закрыть рабочий Revit', icon='CANCEL')
+
+    options = layout.box()
+    options.label(text='Настройки импорта', icon='IMPORT')
+    for field in ('preserve_instances', 'import_materials', 'import_textures',
+                  'pack_images', 'center_model', 'detail_level'):
+        options.prop(props, field)
+    if props.import_id:
+        options.operator('xivgate_rbb.import_selected', text='Перевыгрузить из Revit', icon='FILE_REFRESH').force_refresh = True
+
+    storage = layout.box()
+    storage.label(text='Рабочие данные', icon='FILE_FOLDER')
+    storage.prop(props, 'cache_directory', text='Рабочая папка (пусто — автоматически)')
+    storage.prop(props, 'reuse_export_cache')
+    try:
+        for line in textwrap.wrap('Папка: ' + str(workflow.cache_root(props)), width=48):
+            storage.label(text=line)
+    except ValueError:
+        storage.label(text='Сохраните .blend или укажите рабочую папку', icon='INFO')
+    storage.operator('xivgate_rbb.clear_cache', icon='TRASH')
+
+
 class RBB_PT_panel(bpy.types.Panel):
     bl_label = 'AGR Revit Bridge'
     bl_idname = 'RBB_PT_local_revit'
@@ -744,8 +774,6 @@ class RBB_PT_panel(bpy.types.Panel):
         files = layout.column()
         files.enabled = not props.busy and not runtime.MAINTENANCE
         files.prop(props, 'source_rvt')
-        files.prop(props, 'revit_exe')
-        files.operator('xivgate_rbb.choose_revit', text='Найти и выбрать версию Revit', icon='VIEWZOOM')
         row = files.row(align=True)
         row.operator('xivgate_rbb.scan', text='Получить список', icon='VIEWZOOM')
         box = layout.box()
@@ -818,29 +846,11 @@ class RBB_PT_panel(bpy.types.Panel):
                 action.mode, action.scope = mode, 'model'
             selection.label(text=f'Отмечено для импорта: {props.selected_count} из {len(props.elements)}')
             selection.label(text='Это выбор, не число полученных мешей.')
-        options = layout.column()
-        options.enabled = not props.busy and not runtime.MAINTENANCE
-        options.prop(props, 'preserve_instances')
-        options.prop(props, 'import_materials')
-        options.prop(props, 'import_textures')
-        options.prop(props, 'show_advanced', icon='TRIA_DOWN' if props.show_advanced else 'TRIA_RIGHT', emboss=False)
+        settings = layout.column()
+        settings.enabled = not props.busy and not runtime.MAINTENANCE
+        settings.prop(props, 'show_advanced', icon='TRIA_DOWN' if props.show_advanced else 'TRIA_RIGHT', emboss=False)
         if props.show_advanced:
-            options.prop(props, 'cache_directory', text='Кэш (пусто — автоматически)')
-            options.prop(props, 'reuse_export_cache')
-            options.operator('xivgate_rbb.setup_revit', icon='PLUGIN')
-            try:
-                options.label(text='Кэш: ' + str(workflow.cache_root(props)))
-            except ValueError:
-                options.label(text='Сохраните .blend или укажите папку кэша', icon='INFO')
-            options.operator('xivgate_rbb.clear_cache', icon='TRASH')
-            if runtime.STATE.worker is not None:
-                options.operator('xivgate_rbb.cancel', text='Закрыть рабочий Revit', icon='CANCEL')
-            options.prop(props, 'pack_images')
-            options.prop(props, 'center_model')
-            options.prop(props, 'detail_level')
-            options.prop(props, 'addin_folder')
-            if props.import_id:
-                options.operator('xivgate_rbb.import_selected', text='Перевыгрузить из Revit', icon='FILE_REFRESH').force_refresh = True
+            draw_settings(settings, props)
         action = layout.row()
         action.enabled = not runtime.MAINTENANCE and not props.busy and bool(props.catalog_source) and props.selected_count > 0
         action.operator('xivgate_rbb.import_selected', text='Обновить импорт' if props.import_id else 'Импортировать выбранное', icon='IMPORT')

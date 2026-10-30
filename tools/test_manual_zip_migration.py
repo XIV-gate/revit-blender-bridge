@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sys
 import time
+import zipfile
 import xml.etree.ElementTree as ET
 
 import addon_utils
@@ -14,6 +15,8 @@ sys.dont_write_bytecode = True
 work = Path(os.environ['RBB_TEST_ROOT'])
 old_zip = work / os.environ['RBB_STABLE_PACKAGE']
 new_zip = work / os.environ['RBB_EARLY_PACKAGE']
+with zipfile.ZipFile(new_zip) as archive:
+    new_version = tuple(map(int, archive.read('xivgate_revit_bridge/VERSION').decode().strip().split('.')))
 run = work / ('manual_zip_migration_' + str(os.getpid()))
 run.mkdir()
 
@@ -45,7 +48,7 @@ addon_utils.disable('xivgate_revit_bridge', default_set=False)
 assert bpy.ops.preferences.addon_install(filepath=str(new_zip), overwrite=True) == {'FINISHED'}
 addon_utils.modules_refresh()
 module = addon_utils.enable('xivgate_revit_bridge', default_set=False, persistent=False)
-assert module.bl_info['version'] == (0, 4, 0)
+assert module.bl_info['version'] == new_version
 assert module.ui is not old_ui, 'Manual ZIP install retained the old panel'
 assert scene.xivgate_revit_bridge.import_id == 'keep-scene-settings'
 scene.xivgate_revit_bridge.addin_folder = str(registration_folder)

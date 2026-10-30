@@ -184,3 +184,18 @@ assembly version changed in C#.
   operation is not claimed as tested; API builds and common tests are not substitutes.
 - Unsigned publisher trust remains a native Revit user decision. No trust settings
   were changed, no certificate installed and no security prompt automated.
+
+
+## Early Access 0.4.1 — settings layout
+
+- UI-only regrouping: connection, import options and working data. Legacy addin_folder
+  remains internally compatible but has no visible field. No export/import algorithm changes.
+- 103 ordinary Python tests passed (one Windows symlink privilege skip).
+- Real Blender4.2.14/5.2.3 panel drawing recorded: every option appears once in its
+  intended section; RVT stays at top, manual EXE/search/setup are connection-only,
+  hidden registration path stays absent, full refresh is import-only.
+- Both hosts: final ZIP install/enable and scan invoke passed; actual ZIP switch
+  0.4.0 -> 0.4.1 -> 0.4.0 passed with settings and scene preserved.
+- Six worker variants rebuilt, assembly version0.4.1.0; known net10 baseline
+  CS1701 API unification caveats unchanged. No new live RVT run for a layout change.
+- ZIP SHA256:58d95f7071e85ce1f2182f5522d809a00e2933cc5469daaaea7b797d2de3e788.
