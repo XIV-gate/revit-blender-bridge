@@ -12,6 +12,76 @@ static class ProtocolTests
     static int assertions;
     static void Check(bool condition, string label) { assertions++; if (!condition) throw new Exception(label); }
     static void Throws(Action action, string label) { bool failed = false; try { action(); } catch (ArgumentException) { failed = true; } catch (IOException) { failed = true; } Check(failed, label); }
+    static byte[] Triangle(double[] values, long material)
+    {
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+        foreach (double value in values) writer.Write(GeometryPrecision.ExportFloat(value));
+        writer.Write(material); writer.Flush();
+        return stream.ToArray();
+    }
+    static void GeometryPrecisionRegression()
+    {
+        double[] baseline = { 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1, 0, 1 };
+        long material = (1L << 40) + 42;
+        string Fingerprint(double[] values, long key) => Compat.Hex(Compat.Sha256(Triangle(values, key)));
+        string expected = Fingerprint(baseline, material);
+        var noise = (double[])baseline.Clone();
+        noise[0] = 8.121508599369474e-16; noise[3] = -1.0584910974352248e-30;
+        Check(Fingerprint(noise, material) == expected, "actual-scale tiny position/normal noise must share one binary prototype hash");
+        noise[6] = -1e-9; noise[7] = 1e-9;
+        Check(Fingerprint(noise, material) == expected, "all eight float channels use the documented near-zero floor");
+        double negativeZero = BitConverter.Int64BitsToDouble(unchecked((long)0x8000000000000000UL));
+        Check(BitConverter.GetBytes(GeometryPrecision.ExportFloat(negativeZero)).All(value => value == 0), "negative zero is serialized as positive zero");
+        var uv = (double[])baseline.Clone(); uv[6] = 1e-5;
+        Check(Fingerprint(uv, material) != expected, "real UV differences must remain distinct");
+        var normal = (double[])baseline.Clone(); normal[3] = 1e-5;
+        Check(Fingerprint(normal, material) != expected, "real normal differences must remain distinct");
+        var longer = (double[])baseline.Clone(); longer[8] += 1e-5;
+        Check(Fingerprint(longer, material) != expected, "different dimensions above tolerance must remain distinct");
+        Check(Fingerprint(baseline, material + 1) != expected, "different 64-bit material keys must remain distinct");
+        byte[] bytes = Triangle(baseline, material);
+        Check(bytes.Length == 104 && BitConverter.ToInt64(bytes, 96) == material, "triangle layout and material int64 bytes remain unchanged");
+        foreach (double value in new[] { 1.0001e-9, -1.0001e-9, 0.123456789123, -1234.56789 })
+            Check(BitConverter.GetBytes(GeometryPrecision.ExportFloat(value)).SequenceEqual(BitConverter.GetBytes((float)value)), "nonzero float values above floor retain exact float32 bits");
+    }
+    static void TexturePropertyRegression()
+    {
+        Check(!TextureProperty.IsBitmap("thumbnail", "C:/MaterialThumbnails/chair.png"), "appearance UI thumbnail is not a rendered texture");
+        Check(!TextureProperty.IsBitmap("appearance/0/THUMBNAIL/bitmap", "missing.png"), "thumbnail exclusion applies to exact nested segments before bitmap matching");
+        Check(TextureProperty.IsBitmap("unifiedbitmap_Bitmap", "missing.png"), "missing real bitmap remains texture-sensitive");
+        Check(TextureProperty.IsBitmap("diffuse/0/image", "missing.png"), "image file references remain textures without bitmap key");
+        Check(TextureProperty.IsBitmap("thumbnail_diffuse", "actual.png"), "only exact thumbnail segments are excluded");
+        Check(TextureProperty.IsBitmap("bitmap", "missing.texture"), "bitmap semantic keys retain unsupported or missing file references");
+        Check(!TextureProperty.IsBitmap("bitmap", "  "), "empty bitmap references are not textures");
+    }
+    static void NativeInstanceRegression()
+    {
+        var valid = new NativeInstancePolicy(true);
+        Check(valid.EnterInstance("native-symbol:variant-1", false), "first native root requests frame adoption before any geometry");
+        Check(!valid.Safe, "native identity is not finalized while root is open");
+        Check(!valid.EnterInstance("nested-child", false), "nested geometry cannot replace top-level native frame");
+        valid.Polymesh(true); valid.LeaveInstance(); valid.LeaveInstance();
+        Check(valid.Safe && valid.Key == "native-symbol:variant-1", "single native root owns nested polymesh and preserves exact variant key");
+        var modified = new NativeInstancePolicy(false);
+        Check(!modified.EnterInstance("same-type-but-modified", false), "modified/nonfamily geometry never adopts native frame");
+        modified.Polymesh(true); modified.LeaveInstance();
+        Check(!modified.Safe && modified.Key == "", "modified/nonfamily geometry never claims native sharing safety");
+        var direct = new NativeInstancePolicy(true); direct.Polymesh(true);
+        Check(!direct.EnterInstance("root-after-direct", true), "direct geometry before root prevents late frame adoption");
+        direct.Polymesh(true); direct.LeaveInstance();
+        Check(!direct.Safe && direct.Key == "", "a direct/root mixed piece cannot advertise native identity");
+        var late = new NativeInstancePolicy(true); late.EnterInstance("root", false); late.Polymesh(true); late.LeaveInstance(); late.Polymesh(true);
+        Check(!late.Safe && late.Key == "", "direct geometry after native root invalidates native identity");
+        var multiple = new NativeInstancePolicy(true); multiple.EnterInstance("same-root", false); multiple.Polymesh(true); multiple.LeaveInstance();
+        Check(!multiple.EnterInstance("same-root", true), "second native root cannot adopt another frame even with same key");
+        multiple.Polymesh(true); multiple.LeaveInstance();
+        Check(!multiple.Safe && multiple.Key == "", "multiple native roots cannot be mistaken for one symbol instance");
+        var missing = new NativeInstancePolicy(true); missing.EnterInstance("", false); missing.Polymesh(true); missing.LeaveInstance();
+        Check(!missing.Safe && missing.Key == "", "missing public symbol geometry identifier leaves raw geometry ungrouped");
+        var empty = new NativeInstancePolicy(true); empty.EnterInstance("empty", false); empty.LeaveInstance();
+        Check(!empty.Safe, "empty native root does not prove that piece geometry was inside it");
+    }
     public static int Main(string[] args)
     {
         using var dependencies = FrameworkDependencies.Install(typeof(ProtocolTests).Assembly, Console.WriteLine);
@@ -35,6 +105,9 @@ static class ProtocolTests
             }
 #endif
             string session = Guid.NewGuid().ToString(), request = Guid.NewGuid().ToString();
+            GeometryPrecisionRegression();
+            TexturePropertyRegression();
+            NativeInstanceRegression();
             Check(OpenPolicy.NormalizeServerSnapshot(true, "RSN://example.invalid/project/model.rvt"), "server-origin local snapshot is detached before TransmissionData");
             Check(OpenPolicy.NormalizeServerSnapshot(true, "  rsn://example.invalid/model.rvt"), "server prefix is case insensitive");
             Check(!OpenPolicy.NormalizeServerSnapshot(true, @"C:\fixtures\central.rvt"), "disk central keeps existing local reference preparation");

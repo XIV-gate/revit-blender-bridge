@@ -69,6 +69,18 @@ assert 'fixture Revit export failed' in raw_values(props.warnings)[-1]
 assert props.warnings[-1].severity == 'ERROR'
 assert props.warning_index == len(props.warnings)-1
 assert len(list(session.directory.glob('blender_error_*.json'))) == 2
+terminated = []
+runtime.STATE.worker = SimpleNamespace(pid=123456, poll=lambda: 0 if terminated else None,
+    terminate=lambda: terminated.append(True))
+runtime.STATE.request_id = 'loader-startup-failure'
+runtime.STATE.action = 'scan'
+runtime.STATE.started = runtime.time.monotonic()
+(session.directory / 'loader_error.txt').write_text('Fixture loader hash mismatch\nDetailed test traceback', encoding='utf-8')
+assert runtime.tick() is None
+assert props.status == 'ERROR' and not props.busy and runtime.STATE.action is None
+assert 'Fixture loader hash mismatch' in props.message
+assert terminated, 'A rejected loader must not leave a hidden Revit waiting forever'
+assert len(list(session.directory.glob('blender_error_*.json'))) == 3
 addon.unregister()
 assert not (Path(os.environ['BLENDER_USER_CONFIG']) / 'userpref.blend').exists()
 print('AGR_RUNTIME_FAILURES passed', bpy.app.version_string)

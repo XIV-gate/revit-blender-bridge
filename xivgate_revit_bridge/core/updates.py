@@ -336,6 +336,18 @@ def _validate_files(files, manifest, version, blender_version=None):
     if blender_version is not None and _version(blender_version) < tuple(minimum):
         raise UpdateError('Для обновления требуется более новая версия Blender')
     runtime = _runtime_paths(manifest, version)
+    if 'core/loader_payload.py' in files or 'loader_payloads' in manifest:
+        try:
+            from .loader import payload_record
+            metadata = manifest['loader_payloads']
+            if (not isinstance(metadata, dict) or type(metadata.get('abi')) is not int or metadata['abi'] != 1
+                    or not isinstance(metadata.get('sha256'), dict)
+                    or set(metadata['sha256']) != set(manifest['workers'])):
+                raise ValueError('Перечень загрузчиков не соответствует обработчикам Revit')
+            for key in metadata['sha256']:
+                payload_record(files['core/loader_payload.py'], key, metadata['sha256'])
+        except (KeyError, TypeError, ValueError) as error:
+            raise UpdateError('Неверный комплект постоянных загрузчиков: ' + str(error)) from error
     declared = manifest.get('files')
     if not isinstance(declared, dict) or set(files) != set(declared) or not runtime.issubset(files):
         raise UpdateError('Состав ZIP не совпадает с манифестом пакета')

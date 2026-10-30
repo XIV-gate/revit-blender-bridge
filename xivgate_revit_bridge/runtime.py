@@ -28,9 +28,11 @@ def worker_path(props=None):
 
 def setup_plan(props):
     from .core.installer import manifest_plan
+    from .core.loader import ensure_loader
     kwargs = {'addin_folder': props.addin_folder} if props.addin_folder else {}
     info = inspect_revit(bpy.path.abspath(props.revit_exe))
-    return manifest_plan(info['path'], worker_path(props), year=info['year'], **kwargs)
+    entry = ensure_loader(Path(__file__).resolve().parent, info['key']) or worker_path(props)
+    return manifest_plan(info['path'], entry, year=info['year'], **kwargs)
 
 
 def selected_ids(props):
@@ -69,6 +71,8 @@ class Runtime:
         self.pending_options = {}
         self.worker_exe = ''
         self.pending_context = ''
+        self.pending_snapshot_context = ''
+        self.conversion_manifest = None
         self.pending_selected_ids = None
         self.scanned_source_hash = ''
         self.force_refresh = False
@@ -199,7 +203,7 @@ def export_logs(scene, target):
     if STATE.scene == scene and STATE.file_root:
         # A cache hit can reference a different, verified job's output revision.
         directories.append(STATE.file_root.parent.parent)
-    options = {name: getattr(props, name) for name in ('detail_level', 'preserve_instances',
+    options = {name: getattr(props, name) for name in ('detail_level', 'preserve_instances', 'use_revit_instances', 'instance_tolerance_mm',
         'import_materials', 'import_textures', 'pack_images', 'center_model', 'reuse_export_cache')}
     try:
         revit = inspect_revit(bpy.path.abspath(props.revit_exe))
@@ -274,6 +278,9 @@ def begin_scan(scene, *, auto_import=False):
         raise ValueError('Укажите существующий файл RVT')
     if not worker_path(props).is_file():
         raise FileNotFoundError('В комплекте отсутствует обработчик Revit ' + info['key'])
+    from .core.loader import launch_environment
+    from . import bl_info
+    worker_environment = launch_environment(Path(__file__).resolve().parent, info['key'], '.'.join(map(str, bl_info['version'])))
     plan = setup_plan(props)
     if not Path(plan['path']).is_file():
         raise RuntimeError('Сначала нажмите «Подключить Revit» в этой панели')
@@ -314,7 +321,7 @@ def begin_scan(scene, *, auto_import=False):
     _message('STARTING', 'Запуск локального Revit и чтение рабочей копии…', busy=True, progress=0)
     if STATE.worker.pid is None or STATE.worker.poll() is not None:
         STATE.worker.start(str(exe), STATE.session.directory, STATE.session.token,
-                           extra_env={'XIVGATE_RBB_SESSION_ID': STATE.session.session_id})
+                           extra_env={**worker_environment, 'XIVGATE_RBB_SESSION_ID': STATE.session.session_id})
         STATE.worker_exe = os.path.normcase(str(exe.resolve()))
     _timer_start()
 
@@ -384,14 +391,18 @@ def begin_export(scene, *, force_refresh=False):
     STATE.delta_ids = None
     STATE.file_root = None
     source_hash = source_sha256(source)
-    STATE.pending_context = json.dumps(dict(format=2, source=str(source), sha256=source_hash,
+    STATE.pending_snapshot_context = json.dumps(dict(format='native_family_v1', source=str(source), sha256=source_hash,
+        exe=os.path.normcase(str(Path(bpy.path.abspath(props.revit_exe)).resolve())), detail=props.detail_level), sort_keys=True)
+    STATE.pending_context = json.dumps(dict(format=3, source=str(source), sha256=source_hash,
         exe=os.path.normcase(str(Path(bpy.path.abspath(props.revit_exe)).resolve())),
         detail=props.detail_level, instances=props.preserve_instances, materials=props.import_materials,
-        textures=props.import_textures, pack=props.pack_images, centered=props.center_model), sort_keys=True)
+        textures=props.import_textures, pack=props.pack_images, centered=props.center_model,
+        native_instances=props.use_revit_instances, instance_tolerance_mm=props.instance_tolerance_mm), sort_keys=True)
     STATE.pending_selected_ids = ids
     STATE.pending_options = {'preserve_instances': props.preserve_instances, 'materials': props.import_materials,
                             'textures': props.import_textures, 'pack_images': props.pack_images,
-                            'center_model': props.center_model}
+                            'center_model': props.center_model, 'instance_tolerance_mm': props.instance_tolerance_mm,
+                            'use_revit_instances': props.use_revit_instances}
     same_context = props.import_id and props.import_context_json == STATE.pending_context
     if not force_refresh and same_context:
         from .blender_import import apply_selection, OWNER, ROOT_FLAG, AVAILABLE_IDS, SELECTION
@@ -414,6 +425,22 @@ def begin_export(scene, *, force_refresh=False):
                 pass  # Unknown metadata requires a complete source refresh.
     from .workflow import cache_root
     from .core.export_cache import export_signature, lookup_export
+    if (not force_refresh and STATE.delta_ids is None and props.import_id
+            and props.import_snapshot_context_json == STATE.pending_snapshot_context
+            and props.import_manifest_path):
+        from .core.export_cache import lookup_snapshot
+        try:
+            snapshot_ids = set(json.loads(props.import_snapshot_selection_json))
+        except (TypeError, ValueError):
+            snapshot_ids = set()
+        if ids == snapshot_ids:
+            snapshot = lookup_snapshot(cache_root(props), props.import_manifest_path, source_hash)
+            if snapshot is not None:
+                STATE.scene = scene
+                STATE.file_root = snapshot.parent
+                _start_conversion(snapshot)
+                _timer_start()
+                return
     from . import bl_info
     host = inspect_revit(bpy.path.abspath(props.revit_exe))
     key = '|'.join((host['key'], host.get('version', ''), os.path.normcase(str(Path(bpy.path.abspath(props.revit_exe)).resolve()))))
@@ -446,6 +473,7 @@ def begin_export(scene, *, force_refresh=False):
 
 def _start_conversion(manifest):
     manifest = _within_job(manifest)
+    STATE.conversion_manifest = manifest
     target = manifest.with_name('scene.usdc')
     response = manifest.with_name('conversion.json')
     if STATE.file_root is not None:
@@ -457,6 +485,11 @@ def _start_conversion(manifest):
     command = [str(python_exe), '-m', 'xivgate_revit_bridge.convert_cli', '--manifest', str(manifest),
                '--target', str(target), '--response', str(response)]
     options = STATE.pending_options
+    command.extend(['--instance-tolerance-mm', str(options.get('instance_tolerance_mm', 0.1))])
+    if not options['preserve_instances']:
+        command.append('--no-instance-matching')
+    if not options.get('use_revit_instances', True):
+        command.append('--no-revit-instances')
     if not options['materials']:
         command.append('--no-materials')
     if not options['textures']:
@@ -504,6 +537,15 @@ def _apply_import():
     props.import_id = result['import_id']
     props.import_source = props.catalog_source
     props.import_context_json = STATE.pending_context
+    if STATE.delta_ids is None and STATE.conversion_manifest is not None:
+        props.import_manifest_path = str(STATE.conversion_manifest)
+        props.import_snapshot_context_json = STATE.pending_snapshot_context
+        props.import_snapshot_selection_json = json.dumps(sorted(STATE.pending_selected_ids))
+    else:
+        # A union of separate delta exports is not a single complete raw snapshot.
+        props.import_manifest_path = ''
+        props.import_snapshot_context_json = ''
+        props.import_snapshot_selection_json = ''
     props.source_offset_json = json.dumps(result['source_offset'])
     props.origin_valid = True
     props.origin_centered = STATE.pending_options['center_model']
@@ -540,6 +582,18 @@ def tick():
             _record_stage('scene_removed', terminal=True)
             STATE.stop()
             return None
+        if STATE.action == 'shutdown':
+            response = STATE.session.read_response(STATE.request_id)
+            if response is not None and not response['success']:
+                raise RuntimeError(response.get('error', 'Revit не разрешил штатный выход; процесс оставлен открытым.'))
+            if STATE.worker.poll() is not None:
+                STATE.action = None
+                STATE.stop()
+                _message('IDLE', 'Рабочая копия Revit закрыта. Результат импорта сохранён.')
+                return None
+            if time.monotonic() - STATE.started > 30:
+                raise RuntimeError('Revit не завершил штатный выход за 30 секунд. Процесс оставлен открытым; используйте «Показать Revit».')
+            return 0.25
         if STATE.action == 'convert':
             code = STATE.converter.poll()
             if code is None:
@@ -572,6 +626,12 @@ def tick():
                         _warnings(raw_values(STATE.props.warnings) + ['Кэш не сохранён: ' + str(error)])
                 _start_conversion(response['manifest_path'])
                 return 0.25
+        loader_error = _within_job(STATE.session.directory / 'loader_error.txt')
+        if loader_error.is_file():
+            with loader_error.open(encoding='utf-8-sig', errors='replace') as stream:
+                reason = stream.read(4096).splitlines()
+            STATE.worker.terminate()
+            raise RuntimeError('Ошибка загрузчика Revit: ' + (reason[0] if reason else 'см. loader_error.txt'))
         status = STATE.session.read_status()
         if status:
             name = str(status.get('state', '')).upper()
@@ -599,6 +659,17 @@ def tick():
 
 def cancel(scene=None):
     owner = STATE.scene
+    if (STATE.action is None and owner is not None and STATE.session is not None
+            and STATE.worker is not None and STATE.worker.poll() is None):
+        # An idle worker can exit through Revit's normal API path. In particular,
+        # do not interrupt persistence of the user's first Always Load decision.
+        request = STATE.session.request('shutdown')
+        STATE.request_id = request['request_id']
+        STATE.action = 'shutdown'
+        STATE.started = time.monotonic()
+        _message('CLOSING', 'Штатное закрытие рабочей копии Revit…', busy=True)
+        _timer_start()
+        return
     signal_error = None
     try:
         if STATE.session and STATE.request_id:

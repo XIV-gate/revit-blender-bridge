@@ -41,7 +41,7 @@ assert locations('operator', 'xivgate_rbb.choose_revit') == ['Подключен
 assert locations('operator', 'xivgate_rbb.setup_revit') == ['Подключение Revit']
 assert locations('operator', 'xivgate_rbb.cancel') == ['Подключение Revit']
 assert not locations('prop', 'addin_folder')
-for field in ('preserve_instances', 'import_materials', 'import_textures', 'pack_images', 'center_model', 'detail_level'):
+for field in ('preserve_instances', 'use_revit_instances', 'instance_tolerance_mm', 'import_materials', 'import_textures', 'pack_images', 'center_model', 'detail_level'):
     assert locations('prop', field) == ['Настройки импорта'], (field, layout.calls)
 for field in ('cache_directory', 'reuse_export_cache'):
     assert locations('prop', field) == ['Рабочие данные']

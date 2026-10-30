@@ -16,7 +16,7 @@ if os.environ.get('RBB_PACKAGE_NAME'):
 sys.path.insert(0, os.environ['RBB_SOURCE_DIR'])
 import xivgate_revit_bridge as addon
 from xivgate_revit_bridge import runtime
-from xivgate_revit_bridge.core.jobs import JobSession
+from xivgate_revit_bridge.core.jobs import JobSession, FINISH_MARKER, atomic_write_json, read_json
 
 if not os.environ.get('RBB_PACKAGE_NAME'):
     addon.register()
@@ -28,8 +28,13 @@ root = Path(os.environ['RBB_TEST_ROOT']) / 'scene_lifecycle_jobs'
 class Worker:
     pid = None
     stopped = False
-    def poll(self): return 0 if self.stopped else None
-    def terminate(self): self.stopped = True
+    exited = False
+    terminated = False
+    def poll(self): return 0 if self.stopped or self.exited else None
+    def terminate(self):
+        # Match WorkerProcess: cleanup of an already exited child is a no-op.
+        if self.poll() is None:
+            self.stopped = self.terminated = True
 
 
 def task():
@@ -84,6 +89,52 @@ fresh = runtime.STATE.scene
 assert fresh is not None and fresh.session_uid == uid
 runtime.cancel(fresh)
 assert worker.stopped and not runtime.STATE.scene.xivgate_revit_bridge.busy
+
+# A user closing an idle owned Revit must allow its ordinary shutdown path,
+# including persistence of the first explicit loader trust choice.
+scene, worker = task()
+runtime.STATE.action = None
+scene.xivgate_revit_bridge.busy = False
+scene.xivgate_revit_bridge.status = 'DONE'
+session = runtime.STATE.session
+runtime.cancel(scene)
+assert not worker.terminated and not worker.stopped
+request = read_json(session.directory / 'request.json')
+assert request['action'] == 'shutdown' and request['session_id'] == session.session_id
+assert runtime.STATE.action == 'shutdown' and scene.xivgate_revit_bridge.busy
+assert not (session.directory / FINISH_MARKER).exists()
+response = {key: request[key] for key in ('schema', 'session_id', 'request_id', 'token')}
+response.update(action='shutdown', success=True)
+atomic_write_json(session.directory / 'response.json', response)
+assert runtime.tick() is not None, 'Acknowledgement alone is not proof of normal process exit'
+assert runtime.STATE.worker == worker and not worker.terminated
+assert scene.xivgate_revit_bridge.busy and not (session.directory / FINISH_MARKER).exists()
+worker.exited = True
+assert runtime.tick() is None
+assert scene.xivgate_revit_bridge.status == 'IDLE' and not scene.xivgate_revit_bridge.busy
+assert runtime.STATE.action is None and runtime.STATE.worker is None and runtime.STATE.session is None
+assert (session.directory / FINISH_MARKER).is_file()
+assert not worker.terminated, 'A normal exit must never be followed by forced termination'
+
+# Revit rejecting Exit must leave its process and unfinished job available for
+# the user to resolve the dialog; the controller must surface a useful error.
+scene, worker = task()
+runtime.STATE.action = None
+scene.xivgate_revit_bridge.busy = False
+session = runtime.STATE.session
+runtime.cancel(scene)
+request = read_json(session.directory / 'request.json')
+assert request['action'] == 'shutdown'
+response = {key: request[key] for key in ('schema', 'session_id', 'request_id', 'token')}
+response.update(action='shutdown', success=False, error='Fixture: Revit не разрешил штатный выход')
+atomic_write_json(session.directory / 'response.json', response)
+assert runtime.tick() is None
+assert scene.xivgate_revit_bridge.status == 'ERROR' and not scene.xivgate_revit_bridge.busy
+assert 'Fixture' in scene.xivgate_revit_bridge.message
+assert not worker.terminated and worker.poll() is None
+assert runtime.STATE.worker == worker and runtime.STATE.session == session
+assert not (session.directory / FINISH_MARKER).exists()
+runtime.STATE.stop()  # Explicit fixture teardown after the rejection assertions.
 
 if os.environ.get('RBB_PACKAGE_NAME'):
     addon_utils.disable('xivgate_revit_bridge', default_set=False)

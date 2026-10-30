@@ -14,7 +14,7 @@ $extension = if ($WorkerKey -eq '2024') { '.exe' } else { '.dll' }
 $testDll = Join-Path $destination ('XIVgate.RevitBridge.ProtocolTests' + $extension)
 $arguments = @($configuration.Compiler, '/nologo', '/target:exe', '/langversion:latest', '/nullable:enable', '/warnaserror+', ('/out:' + $testDll))
 $arguments += $configuration.Arguments
-foreach ($file in @('Compat.cs','NetFrameworkSupport.cs','FrameworkDependencies.cs','Protocol.cs','WarningPolicy.cs','RequestWake.cs','TextureLookup.cs','OpenPolicy.cs','tests\ProtocolTests.cs')) { $arguments += Join-Path $PSScriptRoot $file }
+foreach ($file in @('Compat.cs','GeometryPrecision.cs','NativeInstancePolicy.cs','NetFrameworkSupport.cs','FrameworkDependencies.cs','Protocol.cs','WarningPolicy.cs','RequestWake.cs','TextureLookup.cs','TextureProperty.cs','OpenPolicy.cs','tests\ProtocolTests.cs')) { $arguments += Join-Path $PSScriptRoot $file }
 $responseFile = Join-Path $destination '.worker_tests.rsp'
 $arguments[1..($arguments.Length - 1)] | ForEach-Object { '"' + $_ + '"' } | Set-Content -LiteralPath $responseFile -Encoding utf8
 try { & (Join-Path $DotnetRoot 'dotnet.exe') $arguments[0] ('@' + $responseFile) }

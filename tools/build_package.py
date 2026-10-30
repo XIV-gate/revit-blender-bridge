@@ -1,6 +1,7 @@
 """Build a complete legacy Blender add-on ZIP without Autodesk SDK assemblies."""
 import argparse
 import ast
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -11,7 +12,7 @@ if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
-def build(worker, output):
+def build(worker, output, loaders=None, loader_lock=None):
     source = Path(__file__).resolve().parents[1]
     version = (source / 'VERSION').read_text().strip()
     module = ast.parse((source / 'xivgate_revit_bridge' / '__init__.py').read_text(encoding='utf-8'))
@@ -34,6 +35,26 @@ def build(worker, output):
     files = {path.relative_to(module_root).as_posix(): path.read_bytes()
              for path in sorted(module_root.rglob('*.py'))
              if not any(part.startswith('.') or part == '__pycache__' for part in path.relative_to(module_root).parts)}
+    # Existing clients permit verified Python data modules but reject additional
+    # runtime DLL paths. A literal payload keeps in-app migration compatible;
+    # setup extracts frozen loader bytes to their independent immutable path.
+    loader_metadata = None
+    if loaders is not None:
+        if (not isinstance(loaders, dict) or set(loaders) != set(workers)
+                or not isinstance(loader_lock, dict) or set(loader_lock) != set(workers)):
+            raise ValueError('Frozen loaders and their hash lock must match every worker variant')
+        payloads = {}
+        for key, loader in sorted(loaders.items()):
+            loader = Path(loader).resolve(strict=True)
+            data = loader.read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            if (loader.name != 'XIVgate.RevitBridge.Loader.dll' or not data.startswith(b'MZ')
+                    or digest != loader_lock[key]):
+                raise ValueError('Loader differs from its frozen hash lock: ' + key)
+            payloads[key] = {'sha256': digest, 'data': base64.b64encode(data).decode('ascii')}
+        literal = {'schema': 1, 'abi': 1, 'loaders': payloads}
+        files['core/loader_payload.py'] = ('# Generated frozen loader data; never execute this module.\nPAYLOAD = ' + repr(literal) + '\n').encode('utf-8')
+        loader_metadata = {'abi': 1, 'sha256': {key: record['sha256'] for key, record in payloads.items()}}
     worker_names, runtime_files = {}, []
     from xivgate_revit_bridge.core.updates import _NET48_DEPENDENCIES
     for key, path in workers.items():
@@ -58,6 +79,8 @@ def build(worker, output):
                     blender_min=list(info['blender']), worker=worker_names['2027'],
                     workers=worker_names, runtime_files=runtime_files,
                     files={name: hashlib.sha256(payload).hexdigest() for name, payload in sorted(files.items())})
+    if loader_metadata is not None:
+        manifest['loader_payloads'] = loader_metadata
     files['PACKAGE_MANIFEST.json'] = json.dumps(manifest, sort_keys=True, indent=2).encode('utf-8')
     entries = {'xivgate_revit_bridge/' + name: payload for name, payload in files.items()}
     with zipfile.ZipFile(output, 'x', compression=zipfile.ZIP_DEFLATED) as archive:
@@ -75,8 +98,16 @@ if __name__ == '__main__':
     inputs.add_argument('--worker', help='Single Revit 2027 worker for development checks')
     inputs.add_argument('--workers-root', help='Directory containing all six variant subdirectories')
     parser.add_argument('--output', required=True)
+    parser.add_argument('--loaders-root', help='Frozen loader variants; embedded for old-updater compatibility')
+    parser.add_argument('--loader-lock', help='Approved JSON hash lock for the frozen loader ABI')
     args = parser.parse_args()
     workers = ({key: Path(args.workers_root) / key / 'XIVgate.RevitBridge.Worker.dll'
                 for key in ('2024', '2025', '2025-net10', '2026', '2026-net10', '2027')}
                if args.workers_root else args.worker)
-    print(build(workers, args.output))
+    if bool(args.loaders_root) != bool(args.loader_lock):
+        parser.error('--loaders-root and --loader-lock must be used together')
+    keys = workers.keys() if isinstance(workers, dict) else ('2027',)
+    loaders = ({key: Path(args.loaders_root) / key / 'XIVgate.RevitBridge.Loader.dll'
+                for key in keys} if args.loaders_root else None)
+    lock = json.loads(Path(args.loader_lock).read_text(encoding='utf-8')) if args.loader_lock else None
+    print(build(workers, args.output, loaders=loaders, loader_lock=lock))

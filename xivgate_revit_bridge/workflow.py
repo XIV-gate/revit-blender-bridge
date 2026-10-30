@@ -46,6 +46,20 @@ def referenced_jobs(root):
             parts = path.relative_to(root).parts
             if parts:
                 result.add(root / parts[0])
+    # A packed image no longer exposes the raw export as an external blend path,
+    # but that snapshot is still needed for fast, reversible instance regrouping.
+    from .blender_import import OWNER, ROOT_FLAG
+    for scene in bpy.data.scenes:
+        props = getattr(scene, 'xivgate_revit_bridge', None)
+        if not props or not props.import_id or not props.import_manifest_path:
+            continue
+        if not any(c.get(OWNER) == props.import_id and c.get(ROOT_FLAG) for c in scene.collection.children_recursive):
+            continue
+        path = Path(props.import_manifest_path).resolve()
+        if path.is_relative_to(root):
+            parts = path.relative_to(root).parts
+            if parts:
+                result.add(root / parts[0])
     return result
 
 

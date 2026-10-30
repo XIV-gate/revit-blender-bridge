@@ -1,5 +1,6 @@
 """Exercise real UI/controller/converter/importer with an explicit test-only worker double."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import sys
@@ -56,6 +57,10 @@ class TestWorker:
                 if self.empty_delta:
                     fixture_ids.discard('13')
                 manifest = write_fixture(output, fixture_ids)
+                data = read_json(manifest)
+                original = Path(request['source_rvt'])
+                data['source'] = {'path': str(original), 'sha256': hashlib.sha256(original.read_bytes()).hexdigest()}
+                atomic_write_json(manifest, data)
                 if self.composite_delta and request['selection']['include_ids'] == ['13']:
                     data = read_json(manifest)
                     data['occurrences'][0]['source_element_ids'] = ['11', '13']
@@ -95,6 +100,8 @@ with patch.object(runtime, 'WorkerProcess', TestWorker), patch.object(runtime, '
     runtime.begin_scan(scene)
     wait_ready()
     assert props.selected_count == 3 and props.status == 'READY'
+    props.reuse_export_cache = False
+    props.instance_tolerance_mm = 0.1
     runtime.begin_export(scene)
     # Switch active scene while conversion finishes. The result must still belong to its initiating scene.
     bpy.context.window.scene = bpy.data.scenes.new('Other active scene')
@@ -102,6 +109,27 @@ with patch.object(runtime, 'WorkerProcess', TestWorker), patch.object(runtime, '
     assert props.status == 'DONE' and props.result_placements == 3, props.message
     assert props.result_collection in scene.collection.children
     assert props.result_collection not in bpy.context.scene.collection.children
+    # Changing only the matcher must reprocess the verified original snapshot,
+    # even when general export reuse is disabled and another scene is active.
+    from xivgate_revit_bridge.core.export_cache import lookup_snapshot
+    snapshot = props.import_manifest_path
+    expected_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+    assert read_json(Path(snapshot))['source']['sha256'] == expected_hash
+    assert lookup_snapshot(Path(props.cache_directory), snapshot, expected_hash) == Path(snapshot)
+    assert lookup_snapshot(Path(props.cache_directory), snapshot, '0' * 64) is None
+    assert json.loads(props.import_snapshot_context_json)['sha256'] == expected_hash
+    exports, starts = len(TestWorker.export_requests), len(TestWorker.started_executables)
+    identity = props.import_id
+    for tolerance in (0.2, 0.0):
+        props.instance_tolerance_mm = tolerance
+        runtime.begin_export(scene)
+        assert runtime.STATE.action == 'convert', 'Tolerance change must actually reconvert the raw snapshot'
+        wait_ready()
+        assert props.result_placements == 3 and props.import_id == identity
+        assert props.import_manifest_path == snapshot
+        assert len(TestWorker.export_requests) == exports, 'Tolerance change must not request another Revit export'
+        assert len(TestWorker.started_executables) == starts, 'Tolerance change must not start Revit'
+        assert not props.reuse_export_cache
     props.elements[1].selected = False
     props.elements[2].selected = False
     runtime.begin_export(scene)
@@ -120,6 +148,8 @@ with patch.object(runtime, 'WorkerProcess', TestWorker), patch.object(runtime, '
 assert source.read_bytes() == b'explicit test double, not a Revit document'
 xivgate_revit_bridge.unregister()
 report = dict(status='passed', blender=bpy.app.version_string, real_converter_subprocess=True,
-              catalog_selection=True, selective_reimport=True, scene_binding=True, changed_revit_restarts_worker=True, revit_io='test double')
+              catalog_selection=True, selective_reimport=True, scene_binding=True, changed_revit_restarts_worker=True,
+              tolerance_snapshot_reimport_without_revit=True, snapshot_original_sha256=True,
+              general_export_reuse_disabled=True, revit_io='test double')
 (WORK / 'result.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
 print('XIVGATE_CONTROLLER ' + json.dumps(report))

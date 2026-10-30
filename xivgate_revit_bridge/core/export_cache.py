@@ -11,8 +11,9 @@ import os
 from pathlib import Path
 import re
 import stat
+import uuid
 
-from .jobs import atomic_write_json
+from .jobs import atomic_write_json, JOB_MARKER, job_identity, read_json
 from ..geometry_cache import matrix_rows
 
 _HASH = re.compile(r'[0-9a-f]{64}\Z')
@@ -142,14 +143,14 @@ def _verify_dependencies(value):
     return paths
 
 
-def _payloads(root, manifest):
+def _payloads(root, manifest, *, verify_dependencies=True):
     manifest = _safe_path(manifest)
     if not manifest.is_relative_to(root) or not manifest.is_file():
         raise CacheError('Манифест должен находиться внутри каталога кэша')
     value, manifest_hash = _json(manifest, _MAX_MANIFEST_BYTES)
     if type(value.get('schema')) is not int or value['schema'] != 1 or value.get('units') != 'metres' or value.get('up', 'Z') != 'Z':
         raise CacheError('Неподдерживаемый манифест геометрии')
-    dependencies = _verify_dependencies(value)
+    dependencies = _verify_dependencies(value) if verify_dependencies else set()
     prototypes = value.get('prototypes')
     occurrences = value.get('occurrences')
     materials = value.get('materials')
@@ -264,4 +265,58 @@ def lookup_export(indexpath, signature):
             return None
         return manifest
     except (CacheError, OSError, ValueError, TypeError, KeyError, UnicodeError):
+        return None
+
+
+def lookup_snapshot(cache_root, manifest_path, source_sha256):
+    """Validate the current import's owned snapshot, without reading original assets.
+
+    The caller must match its source/options/selection to the successful import.
+    This does not make an export eligible for the general reusable-cache index.
+    """
+    try:
+        _signature(source_sha256)
+        if not Path(cache_root).is_absolute() or not Path(manifest_path).is_absolute():
+            return None
+        root = _safe_path(cache_root)
+        candidate = Path(os.path.abspath(manifest_path))
+        if not root.is_dir() or not candidate.is_relative_to(root):
+            return None
+        parts = candidate.relative_to(root).parts
+        if (len(parts) != 4 or parts[1] != 'output' or parts[3] != 'manifest.json'
+                or any(str(uuid.UUID(value)) != value for value in (parts[0], parts[2]))):
+            return None
+        manifest = _safe_path(candidate)
+        marker = _safe_path(root / parts[0] / JOB_MARKER)
+        if marker.stat().st_size > 4096:
+            return None
+        identity = read_json(marker)
+        if identity != job_identity(parts[0]) or type(identity.get('schema')) is not int:
+            return None
+        value, manifest_hash = _json(manifest, _MAX_MANIFEST_BYTES)
+        source = value.get('source')
+        if not isinstance(source, dict) or source.get('sha256') != source_sha256:
+            return None
+        paths, validated_hash, _ = _payloads(root, manifest, verify_dependencies=False)
+        if validated_hash != manifest_hash:
+            return None
+        # Worker binaries are a complete contiguous sequence of prototypes.
+        # Reject appended/unused bytes too, rather than checking referenced slices only.
+        position = 0
+        for prototype in sorted(value['prototypes'], key=lambda item: item['offset']):
+            if prototype['offset'] != position:
+                return None
+            position += prototype['bytes']
+        binary = _contained(manifest.parent, value.get('binary_file', 'geometry.bin'))
+        if binary.stat().st_size != position:
+            return None
+        for path in paths:
+            fingerprint = _fingerprint(path)
+            if path == manifest and fingerprint['sha256'] != manifest_hash:
+                return None
+            # Production copied textures use their SHA256 as the filename.
+            if _HASH.fullmatch(path.stem) and fingerprint['sha256'] != path.stem:
+                return None
+        return manifest
+    except (CacheError, OSError, ValueError, TypeError, KeyError, UnicodeError, AttributeError):
         return None

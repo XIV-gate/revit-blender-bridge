@@ -2,7 +2,7 @@
 import os
 import json
 from pathlib import Path
-import textwrap
+import blf
 
 import bpy
 from bpy_extras.io_utils import ExportHelper
@@ -14,11 +14,47 @@ from . import runtime, updater, workflow
 from .core.catalog import initial_selection
 from .core.selection_view import group_state, matches, exclusion_summary
 from .core.reporting import raw_values
+from .core.text_layout import pixel_wrap
 
 
 _SYNCING = False
 _RELEASE_ITEMS = []
 _REVIT_ITEMS = []
+
+
+def _text_metrics(context, width=None, inset=0):
+    """Return physical-pixel width and the current UI-font measurement.
+
+    Dialogs supply their declared width in UI pixels. Sidebar regions also
+    account for the user's View2D zoom, independently of the system UI scale.
+    """
+    # Background hosts have no window DPI yet and report ui_scale == 0.
+    scale = context.preferences.system.ui_scale or 1.0
+    zoom = 1.0
+    region = context.region
+    if width is None and region is not None:
+        width = region.width / scale
+        if region.type == 'UI':
+            left = region.view2d.region_to_view(0, 0)[0]
+            right = region.view2d.region_to_view(region.width, 0)[0]
+            if right > left:
+                zoom = region.width / (right - left) / scale
+    width = 300 if width is None else width
+    style = context.preferences.ui_styles[0]
+    # Blender 5.x merged widget_label into widget; 4.2 has a separate style.
+    points = getattr(style, 'widget_label', style.widget).points
+    blf.size(0, points * scale * zoom)
+    # Panel margins, box borders, scrollbar and optional icon gutter.
+    available = max(1, width * scale - (40 + inset) * scale * zoom)
+    return available, lambda value: blf.dimensions(0, value)[0]
+
+
+def _wrapped(layout, text, context, icon='NONE', width=None):
+    available, measure = _text_metrics(context, width, inset=20 if icon != 'NONE' else 0)
+    column = layout.column(align=True)
+    for index, line in enumerate(pixel_wrap(text, available, measure)):
+        # Reserve the same icon gutter on all rows for a clean left edge.
+        column.label(text=line, icon=icon if index == 0 else 'BLANK1' if icon != 'NONE' else 'NONE')
 
 
 def revit_installations(self, context):
@@ -45,9 +81,9 @@ class RBB_OT_choose_revit(bpy.types.Operator):
 
     def draw(self, context):
         self.layout.prop(self, 'installation')
-        self.layout.label(text=self.installation)
-        self.layout.label(text='Будет запущена только выбранная версия Revit.')
-        self.layout.label(text='Для других установок используйте ручной путь в настройках подключения.')
+        _wrapped(self.layout, self.installation, context, width=650)
+        _wrapped(self.layout, 'Будет запущена только выбранная версия Revit.', context, width=650)
+        _wrapped(self.layout, 'Для других установок используйте ручной путь в настройках подключения.', context, width=650)
 
     def execute(self, context):
         props = context.scene.xivgate_revit_bridge
@@ -243,6 +279,9 @@ class RBB_Settings(bpy.types.PropertyGroup):
     catalog_worker_key: StringProperty()
     addin_folder: StringProperty(name='Каталог подключения Revit', subtype='DIR_PATH', description='Обычно определяется автоматически; нужен только при нестандартной установке')
     preserve_instances: BoolProperty(name='Сохранять инстансы', default=True, description='Редактируемые Mesh-объекты с общими данными, как Alt+D')
+    use_revit_instances: BoolProperty(name='Учитывать данные Revit', default=True, description='Искать общую геометрию по нативным вариантам семейств Revit; размеры и материалы учитываются, изменённые экземпляры проверяются по сетке')
+    instance_tolerance_mm: FloatProperty(name='Допуск, мм', default=0.1, min=0, max=1000, soft_max=10, precision=4,
+        description='Допустимое расхождение геометрии при поиске инстансов. 0 — точное сравнение. Больший допуск объединяет больше близких вариантов; изменение применяется при обновлении импорта из сохранённой выгрузки')
     import_materials: BoolProperty(name='Переносить материалы', default=True, description='Создать материалы Blender из доступных данных Revit')
     import_textures: BoolProperty(name='Переносить доступные текстуры', default=True, description='Перенести найденные локальные изображения; отсутствующие файлы перечисляются в отчёте')
     pack_images: BoolProperty(name='Упаковать текстуры в .blend', default=True, description='Встроить найденные изображения в сохранённый .blend для передачи модели')
@@ -279,6 +318,9 @@ class RBB_Settings(bpy.types.PropertyGroup):
     import_id: StringProperty()
     import_source: StringProperty()
     import_context_json: StringProperty()
+    import_manifest_path: StringProperty(subtype='FILE_PATH')
+    import_snapshot_context_json: StringProperty()
+    import_snapshot_selection_json: StringProperty()
     source_offset_json: StringProperty(default='[0,0,0]')
     preview_offset_json: StringProperty()
     preview_source: StringProperty()
@@ -313,8 +355,7 @@ class RBB_OT_warnings(bpy.types.Operator):
         props = context.scene.xivgate_revit_bridge
         self.layout.template_list('RBB_UL_warnings', '', props, 'warnings', props, 'warning_index', rows=10)
         if 0 <= props.warning_index < len(props.warnings):
-            for line in textwrap.wrap(props.warnings[props.warning_index].message, width=100):
-                self.layout.label(text=line)
+            _wrapped(self.layout, props.warnings[props.warning_index].message, context, width=800)
             self.layout.operator('xivgate_rbb.copy_report_details', text='Копировать подробности выбранной записи', icon='COPYDOWN')
 
     def execute(self, context):
@@ -375,8 +416,7 @@ class RBB_OT_element_info(bpy.types.Operator):
                   'Рекомендация: ' + {'include': 'включить', 'exclude': 'исключить', 'review': 'проверить'}.get(item.recommendation, 'проверить'),
                   item.reason)
         for value in values:
-            for line in textwrap.wrap(value, 90):
-                self.layout.label(text=line)
+            _wrapped(self.layout, value, context, width=700)
 
     def execute(self, context):
         return {'FINISHED'}
@@ -560,9 +600,11 @@ class RBB_OT_setup(bpy.types.Operator):
 
     def draw(self, context):
         layout = self.layout
-        layout.label(text='Будет подключён обработчик Revit через файл:')
-        layout.label(text=self.plan['path'])
-        layout.label(text='Текущий открытый Revit не изменяется. DLL работает только в процессе плагина.')
+        _wrapped(layout, 'Будет подключён обработчик Revit через файл:', context, width=620)
+        _wrapped(layout, self.plan['path'], context, width=620)
+        _wrapped(layout, 'Текущий открытый Revit не изменяется. DLL работает только в процессе плагина.', context, width=620)
+        if 'xivgate.revitbridge.loader.dll' in self.plan.get('content', '').lower():
+            _wrapped(layout, 'При первом запросе Revit выберите «Всегда загружать» для загрузчика XIVgate.', context, width=620)
 
     def execute(self, context):
         try:
@@ -594,11 +636,11 @@ class RBB_OT_scan(bpy.types.Operator):
             return {'CANCELLED'}
 
     def draw(self, context):
-        self.layout.label(text='Подключение локального обработчика Revit:')
-        self.layout.label(text=self.plan['path'])
-        self.layout.label(text='Копия RVT и промежуточные данные:')
-        self.layout.label(text=self.cache)
-        self.layout.label(text='Revit может один раз запросить доверие к надстройке.', icon='INFO')
+        _wrapped(self.layout, 'Подключение локального обработчика Revit:', context, width=680)
+        _wrapped(self.layout, self.plan['path'], context, width=680)
+        _wrapped(self.layout, 'Копия RVT и промежуточные данные:', context, width=680)
+        _wrapped(self.layout, self.cache, context, width=680)
+        _wrapped(self.layout, 'Revit может один раз запросить доверие к надстройке.', context, icon='INFO', width=680)
 
     def execute(self, context):
         idle = not context.scene.xivgate_revit_bridge.busy and runtime.STATE.action is None
@@ -714,11 +756,11 @@ class RBB_OT_cache(bpy.types.Operator):
 
 
     def draw(self, context):
-        self.layout.label(text=f"Завершённых заданий: {self.info['eligible_jobs']}; {self.info['eligible_bytes'] / 1024**2:.1f} МБ")
-        self.layout.label(text=self.info['root'])
-        self.layout.label(text='Для следующего импорта может потребоваться новая выгрузка.')
-        self.layout.label(text='Активные и неизвестные каталоги сохраняются.')
-        self.layout.label(text='Файлы, используемые текущими сценами, тоже сохраняются.')
+        _wrapped(self.layout, f"Завершённых заданий: {self.info['eligible_jobs']}; {self.info['eligible_bytes'] / 1024**2:.1f} МБ", context, width=600)
+        _wrapped(self.layout, self.info['root'], context, width=600)
+        _wrapped(self.layout, 'Для следующего импорта может потребоваться новая выгрузка.', context, width=600)
+        _wrapped(self.layout, 'Активные и неизвестные каталоги сохраняются.', context, width=600)
+        _wrapped(self.layout, 'Файлы, используемые текущими сценами, тоже сохраняются.', context, width=600)
 
     def execute(self, context):
         try:
@@ -874,12 +916,12 @@ class RBB_OT_install_update(bpy.types.Operator):
 
     def draw(self, context):
         info = updater.STATE.info or {}
-        self.layout.label(text=f'Установить AGR Revit Bridge {self.target_version}?')
+        _wrapped(self.layout, f'Установить AGR Revit Bridge {self.target_version}?', context, width=560)
         if info.get('channel') == 'early':
-            self.layout.label(text='Ранний доступ: сборка может содержать ошибки.', icon='ERROR')
+            _wrapped(self.layout, 'Ранний доступ: сборка может содержать ошибки.', context, icon='ERROR', width=560)
         if updater.updates._version(self.target_version) < updater.updates._version(updater.current_version()):
-            self.layout.label(text='Переход на предыдущую версию. Новые функции станут недоступны.', icon='INFO')
-        self.layout.label(text='Рабочий процесс Revit будет закрыт перед установкой.')
+            _wrapped(self.layout, 'Переход на предыдущую версию. Новые функции станут недоступны.', context, icon='INFO', width=560)
+        _wrapped(self.layout, 'Рабочий процесс Revit будет закрыт перед установкой.', context, width=560)
 
     def execute(self, context):
         try:
@@ -900,13 +942,19 @@ def draw_settings(layout, props):
     row.operator('xivgate_rbb.choose_revit', text='Автопоиск Revit', icon='VIEWZOOM')
     row.operator('xivgate_rbb.setup_revit', text='Подключить Revit', icon='PLUGIN')
     if runtime.STATE.worker is not None:
-        connection.operator('xivgate_rbb.cancel', text='Закрыть рабочий Revit', icon='CANCEL')
+        row = connection.row(align=True)
+        row.operator('xivgate_rbb.cancel', text='Закрыть рабочий Revit', icon='CANCEL')
+        row.operator('xivgate_rbb.show_worker', text='Показать Revit', icon='WINDOW')
 
     options = layout.box()
     options.label(text='Настройки импорта', icon='IMPORT')
     for field in ('preserve_instances', 'import_materials', 'import_textures',
                   'pack_images', 'center_model', 'detail_level'):
         options.prop(props, field)
+        if field == 'preserve_instances' and props.preserve_instances:
+            row = options.column(align=True)
+            row.prop(props, 'use_revit_instances')
+            row.prop(props, 'instance_tolerance_mm')
     if props.import_id:
         options.operator('xivgate_rbb.import_selected', text='Перевыгрузить из Revit', icon='FILE_REFRESH').force_refresh = True
 
@@ -936,8 +984,7 @@ class RBB_PT_panel(bpy.types.Panel):
         row.operator('xivgate_rbb.scan', text='Получить список', icon='VIEWZOOM')
         box = layout.box()
         icon = 'ERROR' if props.status == 'ERROR' else 'QUESTION' if props.status == 'REQUIRES_ACTION' else 'INFO'
-        for index, line in enumerate(textwrap.wrap(props.message, width=48)[:8]):
-            box.label(text=line, icon=icon if index == 0 else 'NONE')
+        _wrapped(box, props.message, context, icon=icon)
         if props.busy:
             box.progress(factor=props.progress, type='BAR', text='Обработка модели')
             row = box.row(align=True)
@@ -962,8 +1009,8 @@ class RBB_PT_panel(bpy.types.Panel):
         action.enabled = not runtime.MAINTENANCE and not props.busy and bool(props.catalog_source) and props.selected_count > 0
         action.operator('xivgate_rbb.import_selected', text='Обновить импорт' if props.import_id else 'Импортировать выбранное', icon='IMPORT')
         if props.result_collection:
-            layout.label(text=props.result_collection, icon='OUTLINER_COLLECTION')
-            layout.label(text=f'{props.result_placements} размещений · {props.result_prototypes} прототипов')
+            _wrapped(layout, props.result_collection, context, icon='OUTLINER_COLLECTION')
+            _wrapped(layout, f'{props.result_placements} размещений · {props.result_prototypes} прототипов', context)
             rename = layout.row()
             rename.enabled = not props.busy and not runtime.MAINTENANCE
             rename.operator('xivgate_rbb.readable_names', icon='SORTALPHA')
@@ -982,14 +1029,13 @@ class RBB_PT_panel(bpy.types.Panel):
         if updater.STATE.releases:
             channels.prop(props, 'release_version')
         if props.release_channel == 'early':
-            update.label(text='Ранний доступ: возможны ошибки', icon='ERROR')
+            _wrapped(update, 'Ранний доступ: возможны ошибки', context, icon='ERROR')
         info = updater.info_for_props(props)
         if updater._installable(info):
             install = update.row()
             install.enabled = not props.busy and not updater.STATE.busy and runtime.STATE.action is None
             install.operator('xivgate_rbb.install_update', text='Установить ' + info['version'], icon='IMPORT')
-        for line in textwrap.wrap(updater.STATE.message, width=48):
-            update.label(text=line)
+        _wrapped(update, updater.STATE.message, context)
 
 
 @persistent

@@ -8,6 +8,7 @@ from .jobs import source_sha256
 ADDIN_ID = '03BA631F-3053-469E-BBDC-9FF4E6C072F8'
 ADDIN_NAME = 'XIVgate Revit Blender Bridge'
 MANIFEST_NAME = 'XIVgate.RevitBridge.addin'
+LOADER_NAME = 'XIVgate.RevitBridge.Loader.dll'
 FULL_CLASS_NAME = 'XIVgate.RevitBridge.WorkerApp'
 
 
@@ -88,6 +89,11 @@ def manifest_matches(plan):
             return False
         if not expected.is_file() or not registered.is_file():
             return False
+        # A loader derives its worker directory from its own location. Equal
+        # bytes in another Blender installation cannot substitute for this entry.
+        if LOADER_NAME in (expected.name, registered.name):
+            if os.path.normcase(os.path.abspath(expected)) != os.path.normcase(os.path.abspath(registered)):
+                return False
         return source_sha256(expected) == source_sha256(registered)
     except (OSError, ValueError, TypeError, KeyError, UnicodeError):
         return False

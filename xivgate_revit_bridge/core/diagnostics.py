@@ -50,7 +50,8 @@ class Timeline:
 
 
 _ROOT_FILES = {'worker.log', 'worker.stdout.log', 'worker.stderr.log', 'status.json',
-               'response.json', 'startup_error.json', 'warnings.json', 'client_timing.json'}
+               'response.json', 'startup_error.json', 'warnings.json', 'client_timing.json',
+               'loader.log', 'loader_error.txt'}
 
 
 def readable_summary(snapshot):

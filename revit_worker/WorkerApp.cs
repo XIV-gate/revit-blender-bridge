@@ -167,7 +167,10 @@ internal sealed class WorkerImplementation : IExternalApplication
                 scanReady = false; scanWarnings.Clear();
                 if (document != null) { try { document.Close(false); document = null; } catch (Exception closeError) { Log("Cannot close failed scan copy: " + closeError.Message); } }
             }
-            try { Status("error", ex.Message, 0); Respond(false, error: ex.Message); }
+            // OpenDocumentFile can throw a generic cancellation after our
+            // failure callback requested rollback. Preserve the actual cause.
+            string reportedError = failureAbortReason.Length > 0 ? failureAbortReason : ex.Message;
+            try { Status("error", reportedError, 0); Respond(false, error: reportedError); }
             catch (Exception reportingError) { Log("Cannot report request failure: " + reportingError); }
         } finally { busy = false; }
         // A new atomic request may have arrived while a long API operation was running.
@@ -214,13 +217,17 @@ internal sealed class WorkerImplementation : IExternalApplication
             if (failureAbortReason.Length > 0) throw new InvalidOperationException(failureAbortReason);
             CheckCancel();
             foreach (var linkType in new FilteredElementCollector(document).OfClass(typeof(RevitLinkType)).Cast<RevitLinkType>()) {
+                CheckCancel();
                 if (linkType.IsNestedLink) continue; // Top-level unload also covers nested references.
                 bool loaded = RevitLinkType.IsLoaded(document, linkType.Id);
                 Log("Local reference before save: " + linkType.Id.Value + "; loaded=" + loaded);
                 // Unload uses its own API transaction; do not wrap it in ours.
                 // IsLoaded is false for links in closed worksets even when the
                 // saved global load state is Loaded. Unload them explicitly.
-                linkType.Unload(null);
+                try { linkType.Unload(null); }
+                catch (Autodesk.Revit.Exceptions.InvalidOperationException unloadError) {
+                    throw new InvalidOperationException("Revit API не позволяет отключить ссылку «" + linkType.Name + "» в рабочей копии: " + unloadError.Message + ". Исходный RVT не изменён.", unloadError);
+                }
                 warnings.Add("Связь оставлена незагруженной в рабочей копии: " + linkType.Name);
             }
             // Do not silently promise the old TransmissionData path rebasing
@@ -236,6 +243,7 @@ internal sealed class WorkerImplementation : IExternalApplication
                 warnings.Add("Относительные внешние ссылки, кроме RVT: " + relativeReferences.Count + "; проверьте их геометрию после импорта. Пути в отсоединённой копии автоматически не переназначались: " + string.Join(", ", relativeReferences.Take(8)));
             string prepared = Protocol.Below(Path.Combine(root, "input"), Path.Combine(root, "input", Protocol.String(request, "request_id") + "-detached.rvt"));
             if (File.Exists(prepared)) throw new IOException("Подготовленная копия уже существует.");
+            CheckCancel();
             Status("normalizing", "Сохранение отсоединённой локальной рабочей копии", 0.06);
             using (var save = new SaveAsOptions { OverwriteExistingFile = false, MaximumBackups = 1 }) {
                 if (document.IsWorkshared) {
@@ -244,6 +252,7 @@ internal sealed class WorkerImplementation : IExternalApplication
                 }
                 document.SaveAs(prepared, save);
             }
+            CheckCancel();
             document.Close(false);
             document = null;
             using (var preparedInfo = BasicFileInfo.Extract(prepared)) {
@@ -289,6 +298,7 @@ internal sealed class WorkerImplementation : IExternalApplication
         if (info.IsWorkshared) options.DetachFromCentralOption = DetachFromCentralOption.DetachAndPreserveWorksets;
         using var worksets = new WorksetConfiguration(WorksetConfigurationOption.OpenAllWorksets);
         options.SetOpenWorksetsConfiguration(worksets);
+        CheckCancel();
         string openingMessage = normalized ? "Открытие подготовленной локальной копии RVT" : info.IsSavedInCurrentVersion ? "Открытие копии RVT" : "Обновление копии RVT с " + info.Format + " до " + ui.Application.VersionNumber + "; исходный файл не изменяется";
         Status("opening", openingMessage, 0.08);
         ownedCopyPath = copy;
@@ -412,16 +422,19 @@ internal sealed class WorkerImplementation : IExternalApplication
                 return;
             }
             bool errors = false, deleted = false;
+            var errorDescriptions = new List<string>();
             foreach (var failure in accessor.GetFailureMessages()) {
                 string severity = failure.GetSeverity().ToString();
                 bool warning = WarningPolicy.DeleteWarning(severity);
                 errors |= WarningPolicy.IsError(severity);
+                if (WarningPolicy.IsError(severity) && !errorDescriptions.Contains(failure.GetDescriptionText()))
+                    errorDescriptions.Add(failure.GetDescriptionText());
                 CaptureWarning("failures_processing", failure.GetFailureDefinitionId().Guid.ToString(), failure.GetDescriptionText(), severity,
                     failure.GetFailingElementIds().Select(id => id.Value.ToString()).ToArray(), warning ? "warning_suppression_requested" : "not_resolved");
                 if (warning) { accessor.DeleteWarning(failure); deleted = true; }
             }
             if (errors) {
-                failureAbortReason = "Revit обнаружил ошибку в рабочей копии. Операция остановлена; элементы не исправлялись и не удалялись. Подробности: warnings.json";
+                failureAbortReason = "Ошибка модели Revit: " + errorDescriptions[0] + " Операция остановлена; элементы не исправлялись и не удалялись. Подробности: warnings.json";
                 if (WarningPolicy.RequestRollback(accessor.IsActive(), accessor.IsTransactionBeingCommitted(), errors)) {
                     var handling = accessor.GetFailureHandlingOptions();
                     handling.SetClearAfterRollback(true);

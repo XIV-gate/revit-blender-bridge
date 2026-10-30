@@ -13,7 +13,7 @@ import bpy
 
 from . import runtime
 from .core import updates
-from .core.installer import manifest_plan
+from .core.installer import manifest_plan, manifest_matches
 
 
 @dataclass
@@ -269,7 +269,15 @@ def _perform_install():
         registration_path = Path(plan['path'])
         prior_registration = registration_path.read_text(encoding='utf-8-sig') if registration_path.exists() else None
         package_transaction = updates.install_package(state.package, root, state.work)
-        if prior_registration is not None:
+        # New releases retain their frozen entry point across worker versions.
+        # Old packages remain eligible for rollback to direct worker registration.
+        if 'core/loader_payload.py' in state.package.files:
+            from .core.loader import ensure_loader
+            entry = ensure_loader(root, key)
+            if entry is None:
+                raise RuntimeError('В комплекте отсутствует постоянный загрузчик')
+            plan = manifest_plan(bpy.path.abspath(props.revit_exe), entry, year=year, **kwargs)
+        if prior_registration is not None and not manifest_matches(plan):
             registration_transaction = updates.repoint_registration(plan, prior_registration, state.work, root)
         _set('RELOADING', 'Перезагрузка AGR Revit Bridge…')
         _safe_unregister(module)

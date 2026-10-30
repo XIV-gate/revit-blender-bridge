@@ -20,6 +20,7 @@ internal sealed class GeometryExporter : IPhotoRenderContext
     readonly List<string> warnings;
     readonly Stack<Transform> transforms = new();
     readonly Stack<Frame> elements = new();
+    readonly Stack<Piece?> instanceOwners = new();
     readonly Dictionary<string, int> hashes = new();
     readonly List<object> prototypes = new(), occurrences = new();
     readonly Dictionary<long, object> materials = new();
@@ -45,6 +46,7 @@ internal sealed class GeometryExporter : IPhotoRenderContext
         public int Triangles;
         public HashSet<string> SourceIds = new();
         public List<(long Offset, int Bytes)> Segments = new();
+        public NativeInstancePolicy Native = null!;
     }
     sealed record Frame(long Id, Piece? Target);
     GeometryExporter(Document doc, string output, string source, BinaryWriter binary, HashSet<long> selection, Func<bool> canceled, List<string> warnings)
@@ -166,6 +168,10 @@ internal sealed class GeometryExporter : IPhotoRenderContext
             if (e is FamilyInstance instance) frame = instance.GetTransform();
             else { var box = e.get_BoundingBox(null); if (box != null) frame.Origin = box.Transform.OfPoint((box.Min + box.Max) * 0.5); }
             piece = new Piece { Element = e, Transform = frame, ParentId = ancestor?.Element.Id.Value.ToString() };
+            bool nativeEligible = false;
+            try { nativeEligible = selection.Contains(e.Id.Value) && e is FamilyInstance nativeInstance && !nativeInstance.HasModifiedGeometry(); }
+            catch { } // Missing proof leaves the existing raw geometry path intact.
+            piece.Native = new NativeInstancePolicy(nativeEligible);
             piece.Writer = new BinaryWriter(piece.Stream);
             pieces.Add(ownerId, piece);
         }
@@ -222,15 +228,44 @@ internal sealed class GeometryExporter : IPhotoRenderContext
             var t = p.Transform; var e = p.Element;
             occurrences.Add(new { id = e.Id.Value.ToString(), unique_id = e.UniqueId, name = e.Name,
                 category = e.Category?.Name ?? "", category_id = e.Category?.Id.Value.ToString() ?? "", workset = WorkerImplementation.Workset(e), workset_id = e.WorksetId.IntegerValue.ToString(),
-                type_id = e.GetTypeId().Value.ToString(), type_name = doc.GetElement(e.GetTypeId())?.Name ?? "", parent_id = p.ParentId,
+                type_id = e.GetTypeId().Value.ToString(), type_name = doc.GetElement(e.GetTypeId())?.Name ?? "", family_name = FamilyName(e), parent_id = p.ParentId,
+                native_instance_key = p.Native.Key, native_instance_safe = p.Native.Safe,
                 selection_parent_ids = ownerAncestors.TryGetValue(e.Id.Value, out var selectedAncestors) ? selectedAncestors.OrderBy(id => id).Select(id => id.ToString()).ToArray() : Array.Empty<string>(),
                 source_element_ids = p.SourceIds.OrderBy(x => x).ToArray(),
                 decision = "include", prototype,
                 transform = new[] { t.BasisX.X, t.BasisX.Y, t.BasisX.Z, t.BasisY.X, t.BasisY.Y, t.BasisY.Z, t.BasisZ.X, t.BasisZ.Y, t.BasisZ.Z, t.Origin.X * 0.3048, t.Origin.Y * 0.3048, t.Origin.Z * 0.3048 } });
             triangles += p.Triangles; exported.Add(e.Id.Value);
     }
-    public RenderNodeAction OnInstanceBegin(InstanceNode node) { transforms.Push(transforms.Peek().Multiply(node.GetTransform())); return RenderNodeAction.Proceed; }
-    public void OnInstanceEnd(InstanceNode node) { transforms.Pop(); }
+    static string FamilyName(Element element)
+    {
+        try { if (element is FamilyInstance instance) { string? name = instance.Symbol?.Family?.Name; if (name != null) return name; } } catch { }
+        try { return (element.Document.GetElement(element.GetTypeId()) as ElementType)?.FamilyName ?? ""; } catch { return ""; }
+    }
+    public RenderNodeAction OnInstanceBegin(InstanceNode node)
+    {
+        transforms.Push(transforms.Peek().Multiply(node.GetTransform()));
+        Piece? owner = elements.Count > 0 ? elements.Peek().Target : null;
+        instanceOwners.Push(owner);
+        if (owner != null) {
+            string key = "";
+            try {
+                var symbol = node.GetSymbolGeometryId();
+                if (symbol != null && symbol.IsValidObject) key = symbol.AsUniqueIdentifier();
+            } catch { } // Native identity is optional, never a reason to omit raw geometry.
+            if (owner.Native.EnterInstance(key, owner.Triangles > 0)) {
+                // Adopt before writing any vertex. Local = nativeRoot^-1 * worldStack * point;
+                // occurrence = nativeRoot, so world geometry remains algebraically unchanged.
+                owner.Transform = transforms.Peek();
+            }
+        }
+        return RenderNodeAction.Proceed;
+    }
+    public void OnInstanceEnd(InstanceNode node)
+    {
+        if (instanceOwners.Count == 0) throw new InvalidOperationException("Нарушен стек владельцев native instance.");
+        instanceOwners.Pop()?.Native.LeaveInstance();
+        transforms.Pop();
+    }
     public RenderNodeAction OnLinkBegin(LinkNode node) { warnings.Add("Связанный документ пропущен: " + node.GetDocument()?.Title); return RenderNodeAction.Skip; }
     public void OnLinkEnd(LinkNode node) { }
     public RenderNodeAction OnFaceBegin(FaceNode node) => RenderNodeAction.Proceed;
@@ -240,9 +275,10 @@ internal sealed class GeometryExporter : IPhotoRenderContext
     public void OnPolymesh(PolymeshTopology node)
     {
         if (elements.Count == 0 || elements.Peek().Target is not Piece p) return;
+        var points = node.GetPoints(); var normals = node.GetNormals(); var uvs = node.GetUVs(); var facets = node.GetFacets();
+        p.Native.Polymesh(facets.Count > 0);
         var map = p.Transform.Inverse.Multiply(transforms.Peek());
         var inverse = map.Inverse;
-        var points = node.GetPoints(); var normals = node.GetNormals(); var uvs = node.GetUVs(); var facets = node.GetFacets();
         int face = 0;
         foreach (var f in facets) {
             if (canceled()) throw new OperationCanceledException("Экспорт отменён.");
@@ -259,7 +295,7 @@ internal sealed class GeometryExporter : IPhotoRenderContext
                 UV uv = uvs.Count > i ? uvs[i] : new UV(0, 0);
                 foreach (double c in new[] { v.X * 0.3048, v.Y * 0.3048, v.Z * 0.3048, normal.X, normal.Y, normal.Z, uv.U, uv.V }) {
                     if (!Compat.Finite(c) || Math.Abs(c) > float.MaxValue) throw new InvalidDataException("Некорректная координата сетки элемента " + p.Element.Id.Value);
-                    p.Writer.Write((float)c);
+                    p.Writer.Write(GeometryPrecision.ExportFloat(c));
                 }
             }
             p.Writer.Write(material); p.Triangles++; face++;
@@ -271,15 +307,19 @@ internal sealed class GeometryExporter : IPhotoRenderContext
         long sourceMaterial = node.MaterialId.Value;
         var m = doc.GetElement(node.MaterialId) as Material;
         var props = new SortedDictionary<string, object>(StringComparer.Ordinal);
+        int assetWarningsBefore = warnings.Count;
         try { var appearance = node.GetAppearance(); if (appearance != null) ReadAsset(appearance, "", props, 0); } catch (Exception e) { unresolvedTextures = true; warnings.Add("Материал " + sourceMaterial + ": " + e.Message); }
         var color = node.Color;
         double[] rgb = { color.Red / 255.0, color.Green / 255.0, color.Blue / 255.0 };
-        string signature = JsonSerializer.Serialize(new { sourceMaterial, rgb, transparency = node.Transparency, smoothness = node.Smoothness, props });
+        // Count raw references BEFORE lookup/copy: a missing bitmap is still UV-sensitive.
+        // Unreadable appearance metadata also cannot prove that a material is untextured.
+        bool uvSensitive = warnings.Count > assetWarningsBefore || props.Any(property => property.Value is string path && TextureProperty.IsBitmap(property.Key, path));
+        string signature = JsonSerializer.Serialize(new { sourceMaterial, rgb, transparency = node.Transparency, smoothness = node.Smoothness, props, uv_sensitive = uvSensitive });
         if (materialSignatures.TryGetValue(signature, out material)) return;
         material = materials.Count; materialSignatures.Add(signature, material);
         var textures = new SortedDictionary<string, string>(StringComparer.Ordinal);
         foreach (var property in props) {
-            if (property.Value is not string path || !IsTextureProperty(property.Key, path)) continue;
+            if (property.Value is not string path || !TextureProperty.IsBitmap(property.Key, path)) continue;
             try {
                 string? copied = CopyTexture(path);
                 if (copied != null) textures[property.Key] = copied;
@@ -291,12 +331,9 @@ internal sealed class GeometryExporter : IPhotoRenderContext
         string? baseTexture = textures.FirstOrDefault(p => p.Key.Contains("diffuse", StringComparison.OrdinalIgnoreCase) || p.Key.Contains("albedo", StringComparison.OrdinalIgnoreCase) || p.Key.Contains("concrete_color", StringComparison.OrdinalIgnoreCase)).Value;
         if (baseTexture == null && textures.Count == 1 && !new[] { "bump", "normal", "roughness", "cutout", "opacity" }.Any(k => textures.First().Key.Contains(k, StringComparison.OrdinalIgnoreCase))) baseTexture = textures.First().Value;
         materials[material] = new { id = material, source_material_id = sourceMaterial.ToString(), name = m?.Name ?? "Default", color = rgb,
-            transparency = node.Transparency, smoothness = node.Smoothness, properties = props, textures, base_texture = baseTexture,
+            transparency = node.Transparency, smoothness = node.Smoothness, properties = props, textures, base_texture = baseTexture, uv_sensitive = uvSensitive,
             signature_sha256 = Compat.Hex(Compat.Sha256(System.Text.Encoding.UTF8.GetBytes(signature))).ToLowerInvariant() };
     }
-    static bool IsTextureProperty(string key, string value) => !string.IsNullOrWhiteSpace(value) &&
-        (key.Contains("bitmap", StringComparison.OrdinalIgnoreCase) ||
-        new[] { ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".tga", ".exr", ".hdr" }.Contains(Path.GetExtension(value.Split('|')[0]).ToLowerInvariant()));
     string? CopyTexture(string raw)
     {
         if (textureCache.TryGetValue(raw, out var cached)) return cached;

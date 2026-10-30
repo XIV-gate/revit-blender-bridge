@@ -10,6 +10,46 @@ from tools.build_package import build
 
 
 class PackageTests(unittest.TestCase):
+    def test_frozen_loader_is_bundled_for_the_existing_updater_format(self):
+        from xivgate_revit_bridge.core.updates import validate_archive
+        from xivgate_revit_bridge.core.loader import payload_record, ensure_loader
+        with tempfile.TemporaryDirectory(dir=os.environ['XIVGATE_TEST_ROOT']) as directory:
+            root = Path(directory)
+            worker = root / 'XIVgate.RevitBridge.Worker.dll'
+            worker.write_bytes(b'MZ test-only worker')
+            loader = root / 'XIVgate.RevitBridge.Loader.dll'
+            loader.write_bytes(b'MZ test-only loader')
+            digest = hashlib.sha256(loader.read_bytes()).hexdigest()
+            target = root / 'addon.zip'
+            build(worker, target, loaders={'2027': loader}, loader_lock={'2027': digest})
+            with zipfile.ZipFile(target) as archive:
+                version = archive.read('xivgate_revit_bridge/VERSION').decode().strip()
+                raw = archive.read('xivgate_revit_bridge/core/loader_payload.py')
+                _, data, stored = payload_record(raw, '2027')
+                self.assertEqual((data, stored), (loader.read_bytes(), digest))
+            # No schema expansion/additional runtime DLL allowed by old clients.
+            package = validate_archive(target, version, (5, 2, 0))
+            self.assertNotIn('loaders', package.manifest)
+            self.assertEqual(package.manifest['loader_payloads'], {'abi': 1, 'sha256': {'2027': digest}})
+            self.assertFalse(any(name.endswith('Loader.dll') for name in package.files))
+            installed = root / 'installed'
+            installed.mkdir()
+            (installed / 'PACKAGE_MANIFEST.json').write_text(json.dumps(package.manifest))
+            for name, data in package.files.items():
+                path = installed / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+            self.assertEqual(ensure_loader(installed, '2027').read_bytes(), loader.read_bytes())
+
+    def test_changed_loader_must_not_pass_the_freeze_lock(self):
+        with tempfile.TemporaryDirectory(dir=os.environ['XIVGATE_TEST_ROOT']) as directory:
+            root = Path(directory)
+            worker = root / 'XIVgate.RevitBridge.Worker.dll'; worker.write_bytes(b'MZ test worker')
+            loader = root / 'XIVgate.RevitBridge.Loader.dll'; loader.write_bytes(b'MZ changed loader')
+            with self.assertRaises(ValueError):
+                build(worker, root / 'bad.zip', loaders={'2027': loader}, loader_lock={'2027': '0' * 64})
+            self.assertFalse((root / 'bad.zip').exists())
+
     def test_all_worker_variants_and_dependencies_are_verified(self):
         from xivgate_revit_bridge.core.updates import validate_archive
         with tempfile.TemporaryDirectory(dir=os.environ['XIVGATE_TEST_ROOT']) as directory:

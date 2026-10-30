@@ -11,6 +11,22 @@ from xivgate_revit_bridge.core.resources import parse_nvidia_memory
 
 
 class DiagnosticsTests(unittest.TestCase):
+    def test_loader_failure_is_exported_without_job_token(self):
+        with tempfile.TemporaryDirectory(dir=os.environ['XIVGATE_TEST_ROOT']) as folder:
+            root = Path(folder)
+            session = JobSession.create(root)
+            session.request('shutdown')
+            (session.directory / 'loader.log').write_text('Loader validation failed', encoding='utf-8')
+            (session.directory / 'loader_error.txt').write_text('Hash mismatch ' + session.token, encoding='utf-8')
+            target = root / 'logs.zip'
+            export_bundle(target, [session.directory], {})
+            with zipfile.ZipFile(target) as archive:
+                names = archive.namelist()
+                self.assertTrue(any(name.endswith('loader.log') for name in names))
+                error = archive.read(next(name for name in names if name.endswith('loader_error.txt')))
+                self.assertIn(b'Hash mismatch', error)
+                self.assertNotIn(session.token.encode(), error)
+
     def test_stage_durations_ignore_repeated_polls_and_idle_time(self):
         clock = [10.0]
         trace = Timeline(clock=lambda: clock[0])

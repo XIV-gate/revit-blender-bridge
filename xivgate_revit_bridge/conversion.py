@@ -11,7 +11,8 @@ def srgb(value):
     return value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
 
 
-def build_usd(manifest_path, target_path, *, include_materials=True, include_textures=True, center_model=True, source_offset=None):
+def build_usd(manifest_path, target_path, *, include_materials=True, include_textures=True, center_model=True, source_offset=None,
+              match_instances=True, instance_tolerance_mm=0.1, use_revit_instances=True):
     import numpy as np
     from pxr import Usd, UsdGeom, UsdShade, Sdf, Gf, Vt
 
@@ -98,8 +99,41 @@ def build_usd(manifest_path, target_path, *, include_materials=True, include_tex
     dtype = np.dtype([('vertices', '<f4', (3, 8)), ('material', '<i8')])
     binary_name = manifest.get('binary_file', 'geometry.bin')
     binary_path = safe_asset_path(source.parent, binary_name)
+    # Read-only mapped views keep all source variants available for re-grouping
+    # without another Revit export or copying the complete binary into RAM.
+    mapped = np.memmap(binary_path, dtype='u1', mode='r')
+    records_by_id = {}
+    for key, prototype in prototypes.items():
+        start, size = int(prototype['offset']), int(prototype['bytes'])
+        if start < 0 or size < 0 or start + size > len(mapped):
+            raise ValueError('Прототип находится вне буфера геометрии')
+        data = memoryview(mapped)[start:start + size]
+        validate_prototype(prototype, data)
+        records_by_id[key] = np.frombuffer(data, dtype=dtype)
+    if match_instances:
+        from .core.instance_matching import plan_instances
+        instance_plan = plan_instances(occurrences, records_by_id, manifest['materials'],
+            tolerance_mm=instance_tolerance_mm, use_revit=use_revit_instances)
+        adjusted = []
+        for item in occurrences:
+            identifier = str(item['id'])
+            signs = instance_plan.get('adjustments', {}).get(identifier, (1, 1, 1))
+            transform = list(item['transform'])
+            # Column world = original world * canonical axis adjustment. The
+            # exported layout stores three column bases followed by translation.
+            for axis, sign in enumerate(signs):
+                transform[axis * 3:axis * 3 + 3] = [sign * value for value in transform[axis * 3:axis * 3 + 3]]
+            adjusted.append(dict(item, prototype=instance_plan['redirects'][identifier], transform=transform))
+        occurrences = adjusted
+        required = instance_plan['representatives']
+        instance_statistics = instance_plan['statistics']
+    else:
+        required = {int(item['prototype']) for item in occurrences}
+        instance_statistics = {}
     with binary_path.open('rb') as binary:
         for prototype in prototypes.values():
+            if int(prototype['id']) not in required:
+                continue
             binary.seek(int(prototype['offset']))
             data = binary.read(int(prototype['bytes']))
             validate_prototype(prototype, data)
@@ -162,4 +196,6 @@ def build_usd(manifest_path, target_path, *, include_materials=True, include_tex
         world.AddTranslateOp().Set(-offset)
     world.GetPrim().CreateAttribute('revit:source_offset_metres', Sdf.ValueTypeNames.Double3, custom=True).Set(offset)
     stage.GetRootLayer().Save()
-    return {'usd_path': str(target), 'placements': len(occurrences), 'prototypes': len(prototypes), 'missing_textures': missing, 'source_offset': list(offset)}
+    return {'usd_path': str(target), 'placements': len(occurrences), 'prototypes': len(required),
+            'instance_matching': instance_statistics, 'manifest_path': str(source),
+            'missing_textures': missing, 'source_offset': list(offset)}
