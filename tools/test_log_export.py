@@ -8,12 +8,21 @@ import zipfile
 import bpy
 
 sys.dont_write_bytecode = True
+if os.environ.get('RBB_PACKAGE_NAME'):
+    import addon_utils
+    package = Path(os.environ['RBB_TEST_ROOT']) / os.environ['RBB_PACKAGE_NAME']
+    bpy.ops.preferences.addon_install(filepath=str(package), overwrite=True)
+    addon_utils.modules_refresh()
+    assert addon_utils.enable('xivgate_revit_bridge', default_set=False, persistent=False) is not None
 sys.path.insert(0, os.environ['RBB_SOURCE_DIR'])
 import xivgate_revit_bridge as addon
 from xivgate_revit_bridge import runtime
 from xivgate_revit_bridge.core.jobs import JobSession
 
-addon.register()
+if not os.environ.get('RBB_PACKAGE_NAME'):
+    addon.register()
+else:
+    assert Path(addon.__file__).is_relative_to(Path(os.environ['BLENDER_USER_SCRIPTS']))
 scene = bpy.context.scene
 props = scene.xivgate_revit_bridge
 session = JobSession.create(Path(os.environ['RBB_TEST_ROOT']) / 'log_export_jobs')
@@ -44,6 +53,9 @@ with zipfile.ZipFile(path) as archive:
     assert any(name.endswith('client_timing.json') for name in archive.namelist())
 runtime._message('DONE', 'Fixture complete')
 runtime.STATE.action = None
-addon.unregister()
+if os.environ.get('RBB_PACKAGE_NAME'):
+    addon_utils.disable('xivgate_revit_bridge', default_set=False)
+else:
+    addon.unregister()
 assert not (Path(os.environ['BLENDER_USER_CONFIG']) / 'userpref.blend').exists()
 print('AGR_LOG_EXPORT passed', bpy.app.version_string, str(path))

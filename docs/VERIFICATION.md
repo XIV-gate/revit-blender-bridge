@@ -266,3 +266,22 @@ assembly version changed in C#.
   not claim its underlying export failure is resolved.
 - ZIP verified; no personal username paths. SHA256:
   552c4999db688ee6054dc87367242decc58a57f1dbdef2ba08c198be63f135a6.
+
+## Early Access 0.4.5 — diagnostic archive with timings and memory
+
+- 118 ordinary Python tests successful (one Windows symlink privilege skip).
+  Coverage includes phase durations without idle pauses, running snapshots,
+  saved history, archive allowlist, token redaction, log tail limits, no overwrite,
+  refusal to read unowned jobs, and unknown driver counters without false zeros.
+- Final ZIP installed/enabled in isolated Blender5.2.3 and4.2.14. The installed
+  export operator produced a valid ZIP while a fixture job stayed active. Actual
+  Windows physical/process RAM counters and local NVIDIA VRAM counters were read.
+  No original model/profile or Preferences modified. Driver absence remains an
+  explicit unknown; AMD/Intel free VRAM is not claimed as supported.
+- Actual0.4.4->0.4.5->0.4.4 release transitions passed in both hosts. The timing
+  feature's controller, delta/cache, runtime-error and category-tree regressions
+  were checked in5.2.3 before packaging. No new live Revit model run.
+- All six workers rebuilt0.4.5.0 with unchanged C# logic. Existing net10 baseline
+  CS1701 warnings and lack of local Revit2024-2026 live-model coverage remain.
+- ZIP verified, 46 payload files; no personal username paths. SHA256:
+  6192d64644ed70bb69ceb57e3865e2481beb08f67df7ce7fbdca2a4645f24e6e.
