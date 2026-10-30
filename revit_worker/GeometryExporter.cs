@@ -255,8 +255,12 @@ internal sealed class GeometryExporter : IPhotoRenderContext
         var textures = new SortedDictionary<string, string>(StringComparer.Ordinal);
         foreach (var property in props) {
             if (property.Value is not string path || !IsTextureProperty(property.Key, path)) continue;
-            string? copied = CopyTexture(path);
-            if (copied != null) textures[property.Key] = copied;
+            try {
+                string? copied = CopyTexture(path);
+                if (copied != null) textures[property.Key] = copied;
+            } catch (Exception e) when (e is IOException || e is UnauthorizedAccessException || e is ArgumentException) {
+                warnings.Add("Не удалось разрешить текстуру " + path + ": " + e.Message);
+            }
         }
         string? baseTexture = textures.FirstOrDefault(p => p.Key.Contains("diffuse", StringComparison.OrdinalIgnoreCase) || p.Key.Contains("albedo", StringComparison.OrdinalIgnoreCase) || p.Key.Contains("concrete_color", StringComparison.OrdinalIgnoreCase)).Value;
         if (baseTexture == null && textures.Count == 1 && !new[] { "bump", "normal", "roughness", "cutout", "opacity" }.Any(k => textures.First().Key.Contains(k, StringComparison.OrdinalIgnoreCase))) baseTexture = textures.First().Value;
@@ -264,32 +268,37 @@ internal sealed class GeometryExporter : IPhotoRenderContext
             transparency = node.Transparency, smoothness = node.Smoothness, properties = props, textures, base_texture = baseTexture,
             signature_sha256 = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(signature))).ToLowerInvariant() };
     }
-    static bool IsTextureProperty(string key, string value) => key.Contains("bitmap", StringComparison.OrdinalIgnoreCase) ||
-        new[] { ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".tga", ".exr", ".hdr" }.Contains(Path.GetExtension(value.Split('|')[0]).ToLowerInvariant());
+    static bool IsTextureProperty(string key, string value) => !string.IsNullOrWhiteSpace(value) &&
+        (key.Contains("bitmap", StringComparison.OrdinalIgnoreCase) ||
+        new[] { ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".tga", ".exr", ".hdr" }.Contains(Path.GetExtension(value.Split('|')[0]).ToLowerInvariant()));
     string? CopyTexture(string raw)
     {
         if (textureCache.TryGetValue(raw, out var cached)) return cached;
         string source = Environment.ExpandEnvironmentVariables(raw.Split('|')[0].Trim());
-        var candidates = new List<string>();
+        if (string.IsNullOrWhiteSpace(source)) { textureCache[raw] = null; return null; }
         // No downloads or network searches. Explicit network assets are reported as unavailable.
         if (source.StartsWith("\\\\", StringComparison.Ordinal) || source.Contains("://", StringComparison.Ordinal)) {
             warnings.Add("Сетевая текстура не скопирована: " + raw); textureCache[raw] = null; return null;
         }
-        if (Path.IsPathFullyQualified(source)) candidates.Add(source);
-        else candidates.Add(Path.Combine(sourceDirectory, source));
-        candidates.Add(Path.Combine(sourceDirectory, Path.GetFileName(source)));
-        string? found = candidates.FirstOrDefault(File.Exists);
+        string[] libraryRoots = {
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFiles), "Autodesk Shared", "Materials", "Textures"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFilesX86), "Autodesk Shared", "Materials", "Textures")
+        };
+        string? found = TextureLookup.Exact(source, sourceDirectory, libraryRoots, out bool exactAmbiguous);
+        if (exactAmbiguous) {
+            warnings.Add("Различающиеся текстуры в библиотеках по одному точному пути: " + raw); textureCache[raw] = null; return null;
+        }
         if (found == null) {
             if (textureFiles == null) {
                 textureFiles = new();
-                foreach (string baseDir in new[] { Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFiles), "Autodesk Shared", "Materials", "Textures"), Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFilesX86), "Autodesk Shared", "Materials", "Textures") }) {
+                foreach (string baseDir in libraryRoots) {
                     if (!Directory.Exists(baseDir)) continue;
                     try { textureFiles.AddRange(Directory.EnumerateFiles(baseDir, "*", SearchOption.AllDirectories).Take(50000)); } catch (Exception e) { warnings.Add("Поиск текстур: " + e.Message); }
                 }
             }
-            var matches = textureFiles.Where(p => string.Equals(Path.GetFileName(p), Path.GetFileName(source), StringComparison.OrdinalIgnoreCase)).ToList();
-            if (matches.Count == 1) found = matches[0];
-            else if (matches.Count > 1) warnings.Add("Неоднозначное имя текстуры; требуется исходный путь: " + raw);
+            string besideSource = Path.Combine(sourceDirectory, Path.GetFileName(source));
+            found = TextureLookup.UniqueBasename(source, textureFiles.Concat(File.Exists(besideSource) ? new[] { besideSource } : Array.Empty<string>()), out bool basenameAmbiguous);
+            if (basenameAmbiguous) warnings.Add("Неоднозначное имя текстуры; требуется исходный путь: " + raw);
         }
         if (found == null) { warnings.Add("Текстура не найдена: " + raw); textureCache[raw] = null; return null; }
         try {

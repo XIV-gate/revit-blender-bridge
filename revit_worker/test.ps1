@@ -7,7 +7,7 @@ $refs = Get-ChildItem -LiteralPath (Join-Path $DotnetRoot 'packs\Microsoft.NETCo
 $testDll = Join-Path $destination 'XIVgate.RevitBridge.ProtocolTests.dll'
 $arguments = @((Join-Path $sdk.FullName 'Roslyn\bincore\csc.dll'), '/nologo', '/target:exe', '/nullable:enable', '/warnaserror+', ('/out:' + $testDll))
 $arguments += Get-ChildItem -LiteralPath (Join-Path $refs.FullName 'ref\net10.0') -Filter '*.dll' | ForEach-Object { '/reference:' + $_.FullName }
-$arguments += @((Join-Path $PSScriptRoot 'Protocol.cs'), (Join-Path $PSScriptRoot 'WarningPolicy.cs'), (Join-Path $PSScriptRoot 'tests\ProtocolTests.cs'))
+$arguments += @((Join-Path $PSScriptRoot 'Protocol.cs'), (Join-Path $PSScriptRoot 'WarningPolicy.cs'), (Join-Path $PSScriptRoot 'RequestWake.cs'), (Join-Path $PSScriptRoot 'TextureLookup.cs'), (Join-Path $PSScriptRoot 'tests\ProtocolTests.cs'))
 & (Join-Path $DotnetRoot 'dotnet.exe') @arguments
 if ($LASTEXITCODE -ne 0) { throw 'Protocol test compilation failed.' }
 $config = Join-Path $destination 'XIVgate.RevitBridge.ProtocolTests.runtimeconfig.json'

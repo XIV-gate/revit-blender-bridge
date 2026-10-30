@@ -1,6 +1,6 @@
 # File protocol, schema 1
 
-Each session has an absolute job directory, session_id UUID, and random token. The Blender launcher sets XIVGATE_RBB_JOB_ROOT and XIVGATE_RBB_SESSION_TOKEN in the owned Revit child's environment. The worker is inert without them. API calls must never occur on file-watcher/timer threads.
+Each session has an absolute job directory, session_id UUID, and random token. The Blender launcher sets XIVGATE_RBB_JOB_ROOT and XIVGATE_RBB_SESSION_TOKEN in the owned Revit child's environment. The worker is inert without them. Document, transaction and geometry API calls never occur on file-watcher/timer threads; their only Autodesk operation is the documented cross-thread `ExternalEvent.Raise` signal.
 
 JSON files are UTF-8; readers accept a BOM. Writers write a same-directory temporary file and atomically replace the destination. Never consume a partially written request or accept another session's result. request_id values are unique. Worker startup ignores request files from a previous session.
 

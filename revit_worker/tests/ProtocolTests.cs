@@ -1,7 +1,9 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using XIVgate.RevitBridge;
 
 static class ProtocolTests
@@ -56,6 +58,92 @@ static class ProtocolTests
             Check(!WarningPolicy.RequestRollback(false, true, true), "inactive accessor cannot rollback");
             Check(!WarningPolicy.RequestRollback(true, false, true), "already rolling back cannot request new rollback");
             Check(!WarningPolicy.RequestRollback(true, true, false), "warnings do not request rollback");
+            var wake = new RequestWakeGate();
+            Check(!wake.Pending, "quiet dispatcher has no work");
+            wake.Signal(); long oldVersion = wake.Version; wake.Signal();
+            Check(wake.Pending && wake.Version > oldVersion, "duplicate notifications retain newest generation");
+            Check(wake.Complete(oldVersion, "Accepted") && wake.Pending, "accepting older generation cannot lose newer request");
+            Check(!wake.Complete(wake.Version, "Pending") && !wake.Pending, "pending external event coalesces newest request");
+            wake.Signal();
+            Check(wake.Complete(wake.Version, "TimedOut") && wake.Pending, "synchronization timeout retries queued request");
+            Check(!wake.Complete(wake.Version, "Accepted") && !wake.Pending, "successful retry clears wake without polling");
+            wake.Signal();
+            for (int attempt = 0; attempt < 7; attempt++) Check(wake.Complete(wake.Version, "Denied"), "bounded retry remains available");
+            Check(!wake.Complete(wake.Version, "Denied") && wake.Pending, "retry exhaustion preserves durable request without busy loop");
+            wake.Signal(); Check(wake.Complete(wake.Version, "TimedOut"), "new file notification resets retry budget");
+            wake.Stop(); wake.Signal();
+            Check(!wake.Pending && !wake.Complete(wake.Version, "Accepted"), "disposed dispatcher cannot schedule new work");
+            var readRetry = new RequestReadRetryGate();
+            Check(readRetry.TryRetry(), "first transient read error can retry without another file notification");
+            readRetry.Reset();
+            for (int attempt = 0; attempt < 8; attempt++) Check(readRetry.TryRetry(), "bounded request-read retry available");
+            Check(!readRetry.TryRetry() && !readRetry.TryRetry(), "persistent read errors stop retrying");
+            readRetry.Reset(); Check(readRetry.TryRetry(), "valid read or new filesystem notification resets read retry budget");
+            string watchRoot = Path.Combine(root, "wake-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(watchRoot);
+            string watchFile = Path.Combine(watchRoot, "request.json");
+            try {
+                using var first = new ManualResetEventSlim();
+                using var second = new ManualResetEventSlim();
+                using var retriedRead = new ManualResetEventSlim();
+                int retryReads = 0;
+                RequestWake? capturedWatcher = null;
+                using var actualWatcher = new RequestWake(watchRoot, () => {
+                    using var payload = Protocol.Read(watchFile);
+                    if (Protocol.String(payload.RootElement, "value") == "first") first.Set();
+                    if (Protocol.String(payload.RootElement, "value") == "second") second.Set();
+                    if (Protocol.String(payload.RootElement, "value") == "retry") {
+                        try {
+                            if (Interlocked.Increment(ref retryReads) == 1) throw new IOException("Simulated transient sharing violation after accepted wake");
+                            capturedWatcher!.ReadSucceeded();
+                            retriedRead.Set();
+                        } catch (IOException) { capturedWatcher!.ScheduleReadRetry(); }
+                    }
+                    return "Accepted";
+                }, _ => { });
+                capturedWatcher = actualWatcher;
+                Protocol.Atomic(watchFile, new { value = "first" });
+                Check(first.Wait(3000), "atomic creation triggers asynchronous wake without UI activity");
+                Protocol.Atomic(watchFile, new { value = "second" });
+                Check(second.Wait(3000), "atomic replacement triggers another wake without Idling");
+                Protocol.Atomic(watchFile, new { value = "retry" });
+                Check(retriedRead.Wait(3000) && retryReads >= 2, "accepted wake with one IOException retries to success without another file write");
+            } finally {
+                if (File.Exists(watchFile)) File.Delete(watchFile);
+                Directory.Delete(watchRoot);
+            }
+            string textureRoot = Path.Combine(root, "textures-" + Guid.NewGuid().ToString("N"));
+            string native = Path.Combine(textureRoot, "native"), x86 = Path.Combine(textureRoot, "x86"), modelFolder = Path.Combine(textureRoot, "source");
+            string concrete = "Concrete.Cast-In-Place.Flat.Grey.1.jpg", gravel = "Sitework.Planting.Gravel.Mixed.png";
+            string concrete3 = Path.Combine(native, "3", "Mats", concrete), concrete1 = Path.Combine(native, "1", "Mats", concrete), gravel1 = Path.Combine(native, "1", "Mats", gravel);
+            try {
+                Directory.CreateDirectory(Path.GetDirectoryName(concrete3)!);
+                Directory.CreateDirectory(Path.GetDirectoryName(concrete1)!);
+                Directory.CreateDirectory(modelFolder);
+                File.WriteAllBytes(concrete3, new byte[] { 3, 3 }); File.WriteAllBytes(concrete1, new byte[] { 1, 1 }); File.WriteAllBytes(gravel1, new byte[] { 1, 2 });
+                string oldConcrete = Path.Combine(textureRoot, "missing", "Autodesk Shared", "Materials", "Textures", "3", "Mats", concrete);
+                string oldGravel = Path.Combine(textureRoot, "missing", "Autodesk Shared", "Materials", "Textures", "1", "Mats", gravel);
+                Check(TextureLookup.Exact(oldConcrete, modelFolder, new[] { native, x86 }, out bool ambiguous) == concrete3 && !ambiguous, "relocate x86 Concrete by exact version 3 suffix");
+                Check(TextureLookup.Exact(oldGravel.Replace('\\', '/'), modelFolder, new[] { native, x86 }, out ambiguous) == gravel1 && !ambiguous, "relocate Gravel with mixed slash style");
+                Check(TextureLookup.Exact(oldConcrete.Replace("Autodesk Shared", "AUTODESK SHARED"), modelFolder, new[] { native, x86 }, out ambiguous) == concrete3, "library marker is case insensitive");
+                Check(TextureLookup.Exact(Path.Combine("3", "Mats", concrete), modelFolder, new[] { native, x86 }, out ambiguous) == concrete3, "relative library suffix preserves resolution version");
+                Check(TextureLookup.Exact(concrete1, modelFolder, new[] { native, x86 }, out ambiguous) == concrete1, "existing exact source takes precedence");
+                string missingVersion = oldConcrete.Replace(Path.DirectorySeparatorChar + "3" + Path.DirectorySeparatorChar, Path.DirectorySeparatorChar + "2" + Path.DirectorySeparatorChar);
+                Check(TextureLookup.Exact(missingVersion, modelFolder, new[] { native, x86 }, out ambiguous) == null && !ambiguous, "missing version is never silently changed to another quality");
+                Check(TextureLookup.UniqueBasename(concrete, new[] { concrete1, concrete3 }, out ambiguous) == null && ambiguous, "duplicate resolution basenames remain ambiguous");
+                Check(TextureLookup.UniqueBasename(gravel, new[] { concrete1, concrete3, gravel1 }, out ambiguous) == gravel1 && !ambiguous, "unique basename fallback remains available");
+                string mirror = Path.Combine(x86, "3", "Mats", concrete); Directory.CreateDirectory(Path.GetDirectoryName(mirror)!);
+                File.WriteAllBytes(mirror, new byte[] { 3, 3 });
+                Check(TextureLookup.Exact(oldConcrete, modelFolder, new[] { native, x86 }, out ambiguous) == concrete3 && !ambiguous, "identical exact library mirrors are interchangeable");
+                File.WriteAllBytes(mirror, new byte[] { 9, 9 });
+                Check(TextureLookup.Exact(oldConcrete, modelFolder, new[] { native, x86 }, out ambiguous) == null && ambiguous, "conflicting exact library copies are not guessed");
+            } finally {
+                // Delete only this uniquely named fixture below the caller-approved output directory.
+                if (!Path.GetFullPath(textureRoot).StartsWith(Path.TrimEndingDirectorySeparator(root) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) throw new IOException("Unsafe fixture cleanup path");
+                foreach (string fixtureFile in Directory.GetFiles(textureRoot, "*", SearchOption.AllDirectories)) File.Delete(fixtureFile);
+                foreach (string fixtureDir in Directory.GetDirectories(textureRoot, "*", SearchOption.AllDirectories).OrderByDescending(p => p.Length)) Directory.Delete(fixtureDir);
+                Directory.Delete(textureRoot);
+            }
             Console.WriteLine("PASS: " + assertions + " protocol assertions"); return 0;
         } finally { if (File.Exists(file)) File.Delete(file); }
     }

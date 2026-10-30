@@ -16,7 +16,7 @@ from xivgate_revit_bridge.blender_import import import_result, OWNER
 manifest = Path(os.environ['RBB_REAL_MANIFEST']).resolve()
 assert manifest.is_relative_to(WORK)
 metadata = json.loads(manifest.read_text(encoding='utf-8-sig'))
-target = manifest.with_name('smoke.usdc')
+target = manifest.with_name('smoke_' + str(os.getpid()) + '.usdc')
 conversion = build_usd(manifest, target)
 unrelated = bpy.data.objects.get('Cube')
 result = import_result(target, source_path=metadata.get('source', {}).get('path', ''))
@@ -30,7 +30,7 @@ second = os.environ.get('RBB_REAL_SECOND_MANIFEST')
 if second:
     second = Path(second).resolve()
     assert second.is_relative_to(WORK)
-    second_target = second.with_name('smoke.usdc')
+    second_target = second.with_name('smoke_' + str(os.getpid()) + '.usdc')
     build_usd(second, second_target, source_offset=result['source_offset'])
     result = import_result(second_target, import_id=source_id)
     for obj in bpy.data.objects:

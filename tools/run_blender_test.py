@@ -10,6 +10,7 @@ def main():
     parser.add_argument('--blender', required=True)
     parser.add_argument('--workspace', required=True)
     parser.add_argument('--script', default='test_blender_integration.py')
+    parser.add_argument('--timeout', type=float)
     args = parser.parse_args()
     root = Path(args.workspace).resolve()
     if root.drive.casefold() != 'd:' or not root.is_dir():
@@ -25,7 +26,7 @@ def main():
         env[variable] = str(path)
     env.update(PYTHONDONTWRITEBYTECODE='1', PYTHONNOUSERSITE='1', RBB_SOURCE_DIR=str(source), RBB_TEST_ROOT=str(root))
     command = [args.blender, '--background', '--disable-autoexec', '--python-exit-code', '1', '--python', str(source / 'tools' / args.script)]
-    return subprocess.run(command, env=env, cwd=root, check=False).returncode
+    return subprocess.run(command, env=env, cwd=root, check=False, timeout=args.timeout).returncode
 
 
 if __name__ == '__main__':

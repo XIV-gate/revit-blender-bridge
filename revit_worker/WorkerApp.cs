@@ -28,6 +28,19 @@ public sealed class WorkerApp : IExternalApplication
     bool cancellationCached;
     bool openingOwnedCopy, exportingOwnedCopy;
     string ownedCopyPath = "", failureAbortReason = "";
+    ExternalEvent? requestEvent;
+    RequestWake? requestWake;
+    sealed class RequestEventHandler : IExternalEventHandler
+    {
+        readonly WorkerApp owner;
+        public RequestEventHandler(WorkerApp owner) { this.owner = owner; }
+        public string GetName() => "XIVgate Revit Blender Bridge requests";
+        public void Execute(UIApplication app)
+        {
+            try { owner.ExecutePending(app, true); }
+            catch (Exception ex) { owner.Log("ExternalEvent.Execute failed: " + ex); }
+        }
+    }
     public Result OnStartup(UIControlledApplication app)
     {
         string? job = Environment.GetEnvironmentVariable("XIVGATE_RBB_JOB_ROOT");
@@ -62,14 +75,19 @@ public sealed class WorkerApp : IExternalApplication
                 } catch { }
             }
             stage = "subscribe_main_thread_events";
+            // Create belongs to this valid Revit API context; only Raise is used on watcher threads.
+            requestEvent = ExternalEvent.Create(new RequestEventHandler(this));
             enabled = true;
             app.Idling += OnIdling;
             app.DialogBoxShowing += OnDialog;
             app.ControlledApplication.FailuresProcessing += OnFailuresProcessing;
+            requestWake = new RequestWake(root, () => requestEvent.Raise().ToString(), Log);
+            requestWake.Signal(); // A prewritten scan may precede watcher registration.
             Log("Worker startup; Revit " + app.ControlledApplication.VersionNumber);
             return Result.Succeeded;
         } catch (Exception ex) {
             enabled = false;
+            DisposeDispatch();
             try { app.Idling -= OnIdling; app.DialogBoxShowing -= OnDialog; app.ControlledApplication.FailuresProcessing -= OnFailuresProcessing; } catch { }
             if (rootValidated) {
                 Log("Worker startup failure at " + stage + ": " + ex);
@@ -94,24 +112,43 @@ public sealed class WorkerApp : IExternalApplication
     }
     public Result OnShutdown(UIControlledApplication app)
     {
+        DisposeDispatch();
         if (enabled) { app.Idling -= OnIdling; app.DialogBoxShowing -= OnDialog; app.ControlledApplication.FailuresProcessing -= OnFailuresProcessing; }
         // Normal shutdown request closes our owned document in the valid Idling API context.
         return Result.Succeeded;
     }
+    void DisposeDispatch()
+    {
+        // Waits out the short Raise callback before disposing the API event on the Revit thread.
+        try { requestWake?.Dispose(); } catch (Exception ex) { Log("Request watcher disposal: " + ex.Message); }
+        requestWake = null;
+        try { requestEvent?.Dispose(); } catch (Exception ex) { Log("ExternalEvent disposal: " + ex.Message); }
+        requestEvent = null;
+    }
     void OnIdling(object? sender, IdlingEventArgs args)
     {
         if (enabled && !idlingSeen) { idlingSeen = true; Log("First Idling sender: " + (sender?.GetType().FullName ?? "null")); }
-        if (!enabled || busy || DateTime.UtcNow < nextPoll || sender is not UIApplication ui) return;
+        if (sender is UIApplication ui) ExecutePending(ui, false);
+    }
+    void ExecutePending(UIApplication ui, bool externalWake)
+    {
+        if (!enabled || busy || (!externalWake && DateTime.UtcNow < nextPoll)) return;
         nextPoll = DateTime.UtcNow.AddMilliseconds(200);
         string path = Path.Combine(root, "request.json");
         if (!File.Exists(path)) return;
         JsonElement request;
         try {
             using var json = Protocol.Read(path); request = json.RootElement.Clone();
+            requestWake?.ReadSucceeded();
             if (!Protocol.Authenticated(request, token, session)) return;
-        } catch (Exception e) when (e is IOException || e is JsonException) { return; }
+        } catch (Exception e) when (e is IOException || e is JsonException) {
+            Log("Transient request read failure: " + e.Message);
+            requestWake?.ScheduleReadRetry();
+            return;
+        }
         string id = Protocol.String(request, "request_id");
         if (!seen.Add(id)) return;
+        Log("Consuming request " + id + " via " + (externalWake ? "ExternalEvent" : "Idling"));
         // Mark before executing, including failures, to avoid a destructive retry loop.
         session ??= Protocol.String(request, "session_id"); active = request; busy = true;
         nextCancelPoll = DateTime.MinValue; cancellationCached = false;
@@ -133,6 +170,9 @@ public sealed class WorkerApp : IExternalApplication
             try { Status("error", ex.Message, 0); Respond(false, error: ex.Message); }
             catch (Exception reportingError) { Log("Cannot report request failure: " + reportingError); }
         } finally { busy = false; }
+        // A new atomic request may have arrived while a long API operation was running.
+        // Queue one tail check; a seen/absent request returns above and does not reschedule itself.
+        if (action != "shutdown") requestWake?.Signal();
     }
     void Scan(UIApplication ui, JsonElement request)
     {
@@ -282,7 +322,9 @@ public sealed class WorkerApp : IExternalApplication
             var accessor = e.GetFailuresAccessor();
             if (!accessor.IsActive()) return;
             var failedDocument = accessor.GetDocument();
-            bool ownDocument = ReferenceEquals(failedDocument, document) ||
+            // Revit may return a different managed wrapper. SDK Equals compares the underlying
+            // open document; ReferenceEquals fails, and detached copies deliberately have no PathName.
+            bool ownDocument = (document != null && document.IsValidObject && failedDocument.Equals(document)) ||
                 (!string.IsNullOrWhiteSpace(failedDocument.PathName) && string.Equals(Path.GetFullPath(failedDocument.PathName), ownedCopyPath, StringComparison.OrdinalIgnoreCase));
             if (!ownDocument) {
                 Log("Failure event outside verified copied document; left unchanged: " + failedDocument.Title);

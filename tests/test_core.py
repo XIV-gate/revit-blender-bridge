@@ -75,6 +75,29 @@ class CoreTests(unittest.TestCase):
                                                    'type_name': 'Interiorized concrete'}]})
         self.assertEqual(ambiguous['elements'][0]['recommendation'], 'review')
 
+    def test_known_helper_categories_are_advisory_and_unknown_geometry_stays(self):
+        helpers = ['Схемы разрезки витражей', '<Эскиз>', 'Компоненты легенды', 'Помещения',
+                   '<Границы зон>', 'Линии', 'Наборы характеристик материала', 'Камеры', 'Зоны',
+                   'Траектория солнца', 'Осн. горизонтали', 'Границы участков', 'Сведения о проекте',
+                   'Точка съемки', 'Базовая точка проекта', 'Внутреннее начало', 'Site plan.DWG',
+                   'Survey.dxf', 'Rooms', 'Spaces', 'Zones', 'Legend Components', '<Sketch>',
+                   'Curtain Grids', 'Cameras', 'Material Assets', 'Project Information',
+                   'Survey Point', 'Project Base Point', 'Internal Origin', 'Model Lines',
+                   'Sun Path', 'Primary Contours', 'Property Lines']
+        geometric_or_unknown = ['Generic Models', 'Forms', '<Custom>', 'Профили стен',
+                                'Wall Sweeps', 'Railings', 'Ограждения', 'Curtain Wall Mullions',
+                                'Импосты витража', 'Unfamiliar category']
+        elements = [{'id': str(i), 'unique_id': str(i), 'category_name': category, 'recommendation': 'review'}
+                    for i, category in enumerate(helpers + geometric_or_unknown)]
+        catalog = annotate_catalog({'elements': elements})
+        selected = initial_selection(catalog)
+        for i, category in enumerate(helpers + geometric_or_unknown):
+            with self.subTest(category=category):
+                self.assertEqual(selected[str(i)], i >= len(helpers))
+        overridden = initial_selection(catalog, {'0': True})
+        self.assertTrue(overridden['0'])
+        self.assertTrue(all(item['recommendation'] == 'review' for item in elements))
+
     def test_empty_selection_is_explicit_and_revisions_are_isolated(self):
         session = JobSession.create(self.root)
         source = self.root / 'source.rvt'
@@ -128,7 +151,8 @@ class CoreTests(unittest.TestCase):
         dll.write_bytes(b'payload')
         plan = manifest_plan(str(self.root / 'Revit.exe'), str(dll), appdata_root=self.root)
         self.assertEqual(Path(plan['path']).parent.name, '2027')
-        self.assertIn('<AllowLoadIntoExistingSession>False</AllowLoadIntoExistingSession>', plan['content'])
+        self.assertIn('<AllowLoadingIntoExistingSession>No</AllowLoadingIntoExistingSession>', plan['content'])
+        self.assertNotIn('<AllowLoadIntoExistingSession>', plan['content'])
         installed = install_manifest(plan)
         self.assertTrue(installed.exists())
         install_manifest(plan)
@@ -237,6 +261,19 @@ class CoreTests(unittest.TestCase):
             self.assertFalse(manifest_matches(plan))
         target.write_text(plan['content'])
         self.assertFalse(manifest_matches({**plan, 'content': '<broken'}))
+
+    def test_legacy_wrong_loading_tag_is_owned_but_not_a_matching_registration(self):
+        dll = self.root / 'Worker.dll'
+        dll.write_bytes(b'payload')
+        plan = manifest_plan('', str(dll), appdata_root=self.root)
+        target = install_manifest(plan)
+        legacy = plan['content'].replace('<AllowLoadingIntoExistingSession>No</AllowLoadingIntoExistingSession>',
+                                         '<AllowLoadIntoExistingSession>False</AllowLoadIntoExistingSession>')
+        target.write_text(legacy)
+        self.assertFalse(manifest_matches(plan))
+        with self.assertRaisesRegex(ValueError, 'переподключ'):
+            install_manifest(plan)
+        self.assertEqual(target.read_text(), legacy)
 
     def test_foreign_manifest_with_same_name_or_duplicate_entry_is_refused(self):
         dll = self.root / 'Worker.dll'

@@ -8,7 +8,7 @@ Goal: the first working local Blender panel for catalog selection and Revit-back
 - [x] Implement Blender UI and main-thread polling; integrate native/shared-prototype import and selective collection replacement.
 - [x] Validate Blender adapters and generated geometry/materials in isolated Blender 4.2/5.2.
 - [x] Build complete ZIP without SDK DLLs or machine-specific paths; inspect a concrete Revit registration pointer.
-- [ ] Obtain approval of the exact Revit profile installation path, then test launch, old-model opening, scan, selective import, and reimport.
-- [ ] Review source, run fresh checks, commit tested changes, and verify the private remote.
+- [x] Obtain approval of the exact Revit profile installation path, then test launch, old-model opening, scan, selective import, and reimport.
+- [x] Review source, run fresh checks, commit tested changes, and verify the private remote.
 
 Parallel tasks have disjoint ownership: core Python, Revit C#, Blender adapter/UI. The root agent owns integration, packaging, live-host permission boundaries, and final verification.

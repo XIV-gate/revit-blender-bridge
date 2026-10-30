@@ -36,26 +36,34 @@ def manifest_plan(revit_exe, worker_dll, year=2027, appdata_root=None, addin_fol
     addin = ET.SubElement(xml, 'AddIn', Type='Application')
     values = {'Name': ADDIN_NAME, 'Assembly': str(Path(worker_dll).resolve()), 'AddInId': ADDIN_ID,
               'FullClassName': FULL_CLASS_NAME, 'VendorId': 'XIVG', 'VendorDescription': 'XIVgate',
-              'AllowLoadIntoExistingSession': 'False'}
+              'AllowLoadingIntoExistingSession': 'No'}
     for name, value in values.items():
         ET.SubElement(addin, name).text = value
     return {'path': str(target), 'content': '<?xml version="1.0" encoding="utf-8"?>\n' + ET.tostring(xml, encoding='unicode') + '\n'}
 
 
-def _owned_manifest(content):
+def _owned_manifest(content, allow_legacy=False):
     try:
         root = ET.fromstring(content)
         entries = list(root)
         if root.tag != 'RevitAddIns' or len(entries) != 1:
             return None
         entry = entries[0]
-        expected = {'Name': ADDIN_NAME, 'AddInId': ADDIN_ID, 'FullClassName': FULL_CLASS_NAME, 'VendorId': 'XIVG',
-                    'AllowLoadIntoExistingSession': 'False'}
+        expected = {'Name': ADDIN_NAME, 'AddInId': ADDIN_ID, 'FullClassName': FULL_CLASS_NAME, 'VendorId': 'XIVG'}
         if entry.tag != 'AddIn' or entry.get('Type') != 'Application':
             return None
         for name, value in expected.items():
             if len(entry.findall(name)) != 1 or entry.findtext(name) != value:
                 return None
+        # The installed Revit 2027 SDK specifies this exact tag and Yes/No values.
+        # Recognize our old misspelling only for ownership/manual migration;
+        # it must never count as a safe matching registration.
+        current = entry.findall('AllowLoadingIntoExistingSession')
+        legacy = entry.findall('AllowLoadIntoExistingSession')
+        valid_current = len(current) == 1 and current[0].text == 'No' and not legacy
+        valid_legacy = (allow_legacy and not current and len(legacy) == 1 and legacy[0].text == 'False')
+        if not valid_current and not valid_legacy:
+            return None
         if len(entry.findall('Assembly')) != 1:
             return None
         assembly = entry.findtext('Assembly')
@@ -96,7 +104,7 @@ def install_manifest(plan):
         raise FileNotFoundError('Не найдена сборка Revit: ' + str(assembly))
     if target.exists():
         existing = target.read_text(encoding='utf-8-sig')
-        if _owned_manifest(existing) is None:
+        if _owned_manifest(existing, allow_legacy=True) is None:
             raise ValueError('Существующий манифест принадлежит другому приложению')
         if manifest_matches(plan):
             return target

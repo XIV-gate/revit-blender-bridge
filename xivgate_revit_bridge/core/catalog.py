@@ -10,6 +10,21 @@ _MEP_CATEGORY = re.compile(
     r'\bduct|\bpipe|\bconduit|\bcable\s*tray|\bmechanical\s+equipment|'
     r'\belectrical\s+equipment|\bsprinkler|\bair\s*terminal', re.IGNORECASE)
 _FACADE_WORKSET = re.compile(r'фасад|оболоч|\bfacade|\bfaçade|\bexterior', re.IGNORECASE)
+_HELPER_CATEGORIES = frozenset(name.casefold() for name in (
+    'Схемы разрезки витражей', 'Эскиз', 'Эскизы', 'Компоненты легенды',
+    'Помещения', 'Пространства', 'Зоны', 'Границы зон', 'Линии', 'Линии модели',
+    'Наборы характеристик материала', 'Камеры', 'Траектория солнца',
+    'Осн. горизонтали', 'Основные горизонтали', 'Доп. горизонтали', 'Дополнительные горизонтали',
+    'Границы участков', 'Сведения о проекте', 'Точка съемки', 'Точка съёмки',
+    'Базовая точка проекта', 'Внутреннее начало',
+    'Rooms', 'Spaces', 'Zones', 'Zone Boundaries', 'Area Boundaries',
+    'Legend Components', 'Sketch', 'Sketches', 'Curtain Grids', 'Curtain Grid Lines',
+    'Curtain Wall Grids', 'Cameras', 'Material Assets', 'Material Property Sets',
+    'Project Information', 'Survey Point', 'Project Base Point', 'Internal Origin',
+    'Lines', 'Model Lines', 'Sun Path', 'Sunpath', 'Primary Contours', 'Secondary Contours',
+    'Property Lines', 'Site Property Lines',
+))
+_CAD_CATEGORY = re.compile(r'\.(?:dwg|dxf)$', re.IGNORECASE)
 
 
 def annotate_catalog(catalog):
@@ -26,7 +41,12 @@ def annotate_catalog(catalog):
             continue
         category = str(item.get('category_name') or item.get('category') or '').strip()
         category_key = category.casefold()
-        if category_key in ('окна', 'окно', 'windows', 'window'):
+        # Brackets are removed only for lookup in the explicit semantic allowlist;
+        # an unfamiliar <category> remains review and selected.
+        helper_key = category_key.strip('<>').strip()
+        if helper_key in _HELPER_CATEGORIES or _CAD_CATEGORY.search(category):
+            item.update(recommendation='exclude', reason='Служебная категория или CAD-подложка обычно не нужна для фасада; можно включить вручную')
+        elif category_key in ('окна', 'окно', 'windows', 'window'):
             item.update(recommendation='include', reason='Окна включены независимо от функции стены и рабочего набора')
         elif category_key in ('стены', 'стена', 'walls', 'wall'):
             type_name = str(item.get('type_name') or '').strip()

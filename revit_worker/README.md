@@ -11,7 +11,22 @@ Revit-independent protocol assertions in the same approved output directory.
 
 The application does nothing without both `XIVGATE_RBB_JOB_ROOT` and
 `XIVGATE_RBB_SESSION_TOKEN`. The optional `XIVGATE_RBB_SESSION_ID` also pins the
-session UUID. All Autodesk calls happen in Revit's UI-thread callbacks.
+session UUID. Document, transaction and geometry APIs run only in Revit's UI-thread
+callbacks. A job-local `FileSystemWatcher` detects `request.json` creation, change
+and atomic rename/replacement. Its background callback only signals an `ExternalEvent`
+created in the authenticated startup API context; Revit dispatches the actual work
+through `IExternalEventHandler.Execute` on its main thread. External-event reads
+bypass the idle polling throttle. Default Idling remains the startup/fallback path;
+`SetRaiseWithoutDelay` and desktop input/window messages are not used. Notifications
+coalesce, and only failed wake requests receive a bounded retry. Idle waiting has
+no periodic polling timer. The watcher and external event are disposed on shutdown
+and failed bootstrap. This lets an inactive worker accept export/reimport/shutdown
+without requiring interaction with its Revit window.
+Transient request-file I/O/JSON read failures after an accepted wake receive at
+most eight deferred rereads, spaced 250 ms apart. A successful read or a new file
+notification resets that budget; absent, already consumed and foreign requests do
+not schedule rereads. This avoids losing a request to a brief sharing/antivirus
+lock without creating an unlimited malformed-file polling loop.
 `worker_requests.json` records consumed request IDs before execution so a worker
 restart cannot repeat a partially executed request. Diagnostic files are retained.
 Bootstrap logs begin immediately after validation of the owned job directory.
@@ -53,6 +68,13 @@ unsupported links/RPC geometry are reported. Texture lookup uses existing explic
 local paths, the original RVT folder and installed Autodesk material texture
 libraries; it does not download assets. Basic material properties and copied image
 paths preserve the source metadata; this does not reproduce Revit's full renderer.
+Autodesk texture library relocation preserves the complete suffix below
+`Autodesk Shared/Materials/Textures/`, including `1`, `2` or `3` resolution folders.
+Missing x86 library paths and relative library paths are tried exactly beneath
+the installed native/x86 library roots before basename fallback. Different
+resolution files sharing a basename remain ambiguous; the worker never guesses
+their quality. Identical mirrors at an exact suffix are interchangeable, while
+differing mirrors are reported as ambiguous.
 
 Warnings during authenticated operations on the owned copy are captured with
 description, failure ID, severity and element IDs in `warnings.json`, also exposed
@@ -74,6 +96,11 @@ that context is unavailable (including an already rolling-back transaction or an
 unverifiable document), default Revit handling remains; human action may be required.
 No automatic repair or retry is attempted. Warning deletion affects only the
 in-memory failure queue and copied document; the original RVT is never saved.
+Document ownership uses Revit's `Document.Equals` override, which recognizes
+different managed wrappers of the same currently open document. It does not depend
+on `ReferenceEquals` or a nonempty `PathName`: detached copies have an empty path.
+During opening, before the returned owned document is available, an exact copied
+path remains the conservative fallback for failure-queue changes.
 
 All other dialogs report `requires_action` without overriding their result. Shutdown
 closes only the retained worker-owned document without saving, and posts Exit only

@@ -27,12 +27,43 @@ The first run reached a standard document warning concerning an automatically
 corrected lift-door family. The worker now has scoped automatic acknowledgement
 for this exact document-warning dialog and captures API/persistent warnings.
 
-The user allowed the revised unsigned local DLL once; bootstrap and Idling logs
-confirm that the revised worker started. It is currently upgrading the copied RVT.
-Ordinary model-warning handling,
-catalog/export with that worker, and the complete real-RVT round trip are not yet
-claimed as passed. This section must be updated from actual results after the user
-opening and export finish.
+The user allowed the revised unsigned local DLL once. The worker opened/upgraded
+the copied source, collected warnings without manual model-warning confirmation,
+and returned a 19,531-element catalog. Advisory defaults selected 14,811 elements,
+excluding known helper categories and internal wall types. Export produced 12,108
+placements, 5,203 prototypes, 391,971 unique triangles and 59 material variants.
+The Blender 5.2.3 real-export smoke test imported every placement, verified matrices
+(maximum observed error 2.1e-7), preserved unrelated geometry, and saved a new test
+`.blend`. Missing source V: textures were reported.
+
+The final FileSystemWatcher/ExternalEvent worker consumed an export request in
+0.068 seconds without window activation. Its full export has the same 12,108
+placements and 5,203 prototypes. Exact library-relative lookup recovered four
+available texture files, including three base-color maps. Missing V: assets remain
+reported rather than replaced with guessed images.
+
+A large-scene reimport regression opens an immutable full result and imports a
+real four-element subset. It verifies exact selection, unchanged retained world
+matrices, preserved unrelated geometry and no leftover empty import collection.
+The original individual-ID deletion failed the 20-second test timeout and a Python
+stack dump identified `_remove_revision`. The batch-ID version passes: approximately
+2.44 seconds on Blender 5.2.3 and 4.39 seconds on 4.2.14 in this session (these
+measure Blender replacement, excluding Revit export time). Foreign child-object
+preservation also passes both versions' fixture tests after this change.
+
+The complete live-controller rerun passed in isolated Blender 5.2.3: catalog →
+full import → UI selection → real Revit subset export → asynchronous conversion →
+selective reimport. The full scene contains three packed base-color images. Four
+selected IDs replace the 12,108-placement result, with stable coordinates and
+unrelated geometry preserved. Both a full scene and a separate subset scene were
+saved to explicit new test paths; no original Blender scene or Preferences was saved.
+
+Fresh checks: 26 Python tests, 83 .NET assertions, SDK compilation, Blender fixture
+integration, complete ZIP installation in isolated 4.2/5.2 profiles, large-scene
+reimport regression and the real-Revit controller run. The SDK build is deterministic
+within the same installed toolchain. The original RVT SHA256 is unchanged after
+the completed opening/export/reimport sequence. The owned worker accepted an
+authenticated shutdown request without saving its document.
 
 ## Limits
 

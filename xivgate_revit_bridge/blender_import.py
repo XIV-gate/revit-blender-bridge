@@ -24,19 +24,25 @@ def _remove_revision(revision):
             world = obj.matrix_world.copy()
             obj.parent = None
             obj.matrix_world = world
-    for obj in owned:
-        bpy.data.objects.remove(obj, do_unlink=True)
+    # Individual ID removal rescans relations for every object and takes minutes
+    # for a real facade. Batch only the explicitly owned IDs after detaching guests.
+    if owned:
+        bpy.data.batch_remove(ids=tuple(owned))
     collections = [item for item in bpy.data.collections if item.get(REVISION) == revision]
-    for collection in reversed(collections):
-        if not collection.objects and not collection.children:
-            bpy.data.collections.remove(collection)
-        else:
-            collection.name = 'Сохранённые пользовательские объекты'
-            collection.pop(ROOT_FLAG, None)
+    # Prune leaves first; alphabetical datablock order is not hierarchy order.
+    while collections:
+        empty = {item for item in collections if not item.objects and not item.children}
+        if not empty:
+            break
+        collections = [item for item in collections if item not in empty]
+        bpy.data.batch_remove(ids=tuple(empty))
+    for collection in collections:
+        collection.name = 'Сохранённые пользовательские объекты'
+        collection.pop(ROOT_FLAG, None)
     for kind in ('meshes', 'materials', 'images'):
-        for data in list(getattr(bpy.data, kind)):
-            if data.get(REVISION) == revision and data.users == 0:
-                getattr(bpy.data, kind).remove(data)
+        orphaned = [data for data in getattr(bpy.data, kind) if data.get(REVISION) == revision and data.users == 0]
+        if orphaned:
+            bpy.data.batch_remove(ids=tuple(orphaned))
 
 
 def import_result(usd_path, *, import_id=None, preserve_instances=True, pack_images=True, source_path=''):
