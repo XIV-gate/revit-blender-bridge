@@ -2,6 +2,7 @@
 import argparse
 import ast
 import hashlib
+import json
 from pathlib import Path
 import zipfile
 
@@ -21,11 +22,19 @@ def build(worker, output):
         raise ValueError('Choose the compiled XIVgate worker DLL')
     if output.exists() or not output.parent.is_dir():
         raise ValueError('Choose a fresh ZIP in an existing output directory')
-    entries = {str(path.relative_to(source)).replace('\\', '/'): path.read_bytes()
-               for path in sorted((source / 'xivgate_revit_bridge').rglob('*.py'))}
-    entries['xivgate_revit_bridge/runtime/revit/2027/' + worker.name] = worker.read_bytes()
-    entries['xivgate_revit_bridge/USER_GUIDE_RU.md'] = (source / 'docs' / 'USER_GUIDE_RU.md').read_bytes()
-    entries['xivgate_revit_bridge/VERSION'] = (source / 'VERSION').read_bytes()
+    module_root = source / 'xivgate_revit_bridge'
+    files = {path.relative_to(module_root).as_posix(): path.read_bytes()
+             for path in sorted(module_root.rglob('*.py'))
+             if not any(part.startswith('.') or part == '__pycache__' for part in path.relative_to(module_root).parts)}
+    worker_name = f'runtime/revit/2027/{version}/' + worker.name
+    files[worker_name] = worker.read_bytes()
+    files['USER_GUIDE_RU.md'] = (source / 'docs' / 'USER_GUIDE_RU.md').read_bytes()
+    files['VERSION'] = (version + '\n').encode('utf-8')
+    manifest = dict(schema=1, id='xivgate_revit_bridge', version=version,
+                    blender_min=list(info['blender']), worker=worker_name,
+                    files={name: hashlib.sha256(payload).hexdigest() for name, payload in sorted(files.items())})
+    files['PACKAGE_MANIFEST.json'] = json.dumps(manifest, sort_keys=True, indent=2).encode('utf-8')
+    entries = {'xivgate_revit_bridge/' + name: payload for name, payload in files.items()}
     with zipfile.ZipFile(output, 'x', compression=zipfile.ZIP_DEFLATED) as archive:
         for name, payload in sorted(entries.items()):
             info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))

@@ -16,8 +16,10 @@ from .core.launcher import WorkerProcess
 
 
 def worker_path():
+    from . import bl_info
+    version = '.'.join(map(str, bl_info['version']))
     override = os.environ.get('XIVGATE_RBB_WORKER_DLL')
-    return Path(override) if override else Path(__file__).parent / 'runtime' / 'revit' / '2027' / 'XIVgate.RevitBridge.Worker.dll'
+    return Path(override) if override else Path(__file__).parent / 'runtime' / 'revit' / '2027' / version / 'XIVgate.RevitBridge.Worker.dll'
 
 
 def setup_plan(props):
@@ -76,6 +78,7 @@ class Runtime:
 
 
 STATE = Runtime()
+MAINTENANCE = False
 
 
 def _timer_start():
@@ -106,7 +109,7 @@ def _warnings(values):
 
 def begin_scan(scene, *, auto_import=False):
     props = scene.xivgate_revit_bridge
-    if props.busy or STATE.action is not None:
+    if MAINTENANCE or props.busy or STATE.action is not None:
         raise RuntimeError('Дождитесь завершения текущего задания')
     if os.name != 'nt':
         raise RuntimeError('Локальный Revit требует Windows')
@@ -191,7 +194,7 @@ def _load_catalog(path):
 
 def begin_export(scene):
     props = scene.xivgate_revit_bridge
-    if props.busy or STATE.action is not None:
+    if MAINTENANCE or props.busy or STATE.action is not None:
         raise RuntimeError('Текущее задание ещё не завершено')
     if not props.elements:
         raise RuntimeError('Сначала получите список элементов модели')

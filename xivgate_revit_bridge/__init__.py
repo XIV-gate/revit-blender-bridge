@@ -1,12 +1,14 @@
-"""XIVgate Revit Blender Bridge: local RVT import with a Blender-only workflow."""
+"""AGR Revit Bridge by XIVgate: local RVT import from Blender."""
 
 bl_info = {
-    "name": "XIVgate Revit Bridge",
+    "name": "AGR Revit Bridge",
     "author": "XIVgate",
-    "version": (0, 1, 0),
+    "version": (0, 2, 0),
     "blender": (4, 2, 0),
-    "location": "3D View > Sidebar > XIVgate > Revit",
+    "location": "3D View > Sidebar > AGR > Revit",
     "description": "Scan local RVT models, select elements, and import shared geometry",
+    "doc_url": "https://github.com/XIV-gate/revit-blender-bridge#readme",
+    "tracker_url": "https://github.com/XIV-gate/revit-blender-bridge/issues",
     "category": "Import-Export",
 }
 

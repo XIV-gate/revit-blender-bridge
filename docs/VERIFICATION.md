@@ -73,3 +73,26 @@ Linked RVT geometry, complete Revit renderer reproduction, automatic repair of
 error-severity failures, and missing source texture recovery are unsupported.
 First-load trust/licensing and unknown dialogs may require the user. The plugin
 never disables Revit security checks or resolves failures by deleting model elements.
+
+## 0.2.0 AGR/update verification
+
+The display name and sidebar are AGR Revit Bridge / AGR; the module, scene keys,
+add-in GUID and geometry protocol retain compatibility. Revit code changes in
+this version are assembly branding/version metadata; geometry behavior is unchanged.
+
+Fresh host-independent checks include 52 Python tests and the existing 83 .NET
+assertions. The updater tests cover HTTP/offline errors, metadata/archive bounds,
+GitHub digest/identity checks, malformed ZIPs, in-place rollback, old DLL retention,
+registration migration/no-clobber recovery and a real second-process OS lock.
+
+Isolated Blender 5.2.3 and 4.2.14 exercise update 0.2.0 → synthetic 0.2.1 with an
+injected network transport. They verify that new submodule code actually loads,
+settings/selection/scene objects survive, an old DLL held by a Windows read lock
+is unchanged, and registration points at the new worker. An intentionally broken
+0.2.2 register callback restores 0.2.1 and its pointer. Tests also cover refused
+worker shutdown, file loading during checks/downloads, and release of the OS lock
+even when registration rollback itself fails. Blender Preferences are not saved.
+
+Public anonymous download from this repository cannot be claimed until the owner
+approves repository visibility and publication of the prepared GitHub release.
+Private drafts are intentionally rejected by the production updater.

@@ -8,9 +8,8 @@ from bpy.app.handlers import persistent
 from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProperty,
                        IntProperty, PointerProperty, StringProperty)
 
-from . import runtime
+from . import runtime, updater
 from .core.catalog import initial_selection
-from .core.installer import install_manifest
 
 
 _SYNCING = False
@@ -205,7 +204,7 @@ class RBB_OT_setup(bpy.types.Operator):
 
     def draw(self, context):
         layout = self.layout
-        layout.label(text='Будет создан служебный файл подключения Revit:')
+        layout.label(text='Будет подключён обработчик Revit через файл:')
         for line in textwrap.wrap(self.plan['path'], 80):
             layout.label(text=line)
         layout.label(text='Текущий открытый Revit не изменяется. DLL работает только в процессе плагина.')
@@ -213,7 +212,7 @@ class RBB_OT_setup(bpy.types.Operator):
     def execute(self, context):
         try:
             plan = runtime.setup_plan(context.scene.xivgate_revit_bridge)
-            path = install_manifest(plan)
+            path = updater.connect_revit(plan)
             self.report({'INFO'}, 'Обработчик подключён: ' + str(path))
             return {'FINISHED'}
         except Exception as error:
@@ -284,18 +283,43 @@ class RBB_OT_show_worker(bpy.types.Operator):
             return {'CANCELLED'}
 
 
+class RBB_OT_check_update(bpy.types.Operator):
+    bl_idname = 'xivgate_rbb.check_update'
+    bl_label = 'Проверить обновления'
+    def execute(self, context):
+        try:
+            updater.start_check()
+            return {'FINISHED'}
+        except Exception as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+
+
+class RBB_OT_install_update(bpy.types.Operator):
+    bl_idname = 'xivgate_rbb.install_update'
+    bl_label = 'Установить обновление'
+    bl_description = 'Скачать проверенный релиз AGR с GitHub и загрузить новую версию в этом Blender'
+    def execute(self, context):
+        try:
+            updater.start_install()
+            return {'FINISHED'}
+        except Exception as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+
+
 class RBB_PT_panel(bpy.types.Panel):
-    bl_label = 'Revit → Blender'
+    bl_label = 'AGR Revit Bridge'
     bl_idname = 'RBB_PT_local_revit'
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'XIVgate'
+    bl_category = 'AGR'
 
     def draw(self, context):
         layout = self.layout
         props = context.scene.xivgate_revit_bridge
         files = layout.column()
-        files.enabled = not props.busy
+        files.enabled = not props.busy and not runtime.MAINTENANCE
         files.prop(props, 'source_rvt')
         files.prop(props, 'revit_exe')
         files.prop(props, 'cache_directory')
@@ -313,7 +337,7 @@ class RBB_PT_panel(bpy.types.Panel):
             row.operator('xivgate_rbb.show_worker', icon='WINDOW')
         if props.elements:
             selection = layout.column()
-            selection.enabled = not props.busy
+            selection.enabled = not props.busy and not runtime.MAINTENANCE
             selection.prop(props, 'list_mode', expand=True)
             selection.prop(props, 'search', text='', icon='VIEWZOOM')
             if props.list_mode == 'categories':
@@ -332,7 +356,7 @@ class RBB_PT_panel(bpy.types.Panel):
                 row.operator('xivgate_rbb.select', text=label).mode = mode
             selection.label(text=f'Выбрано: {props.selected_count} из {len(props.elements)}')
         options = layout.column()
-        options.enabled = not props.busy
+        options.enabled = not props.busy and not runtime.MAINTENANCE
         options.prop(props, 'preserve_instances')
         options.prop(props, 'import_materials')
         options.prop(props, 'import_textures')
@@ -343,23 +367,36 @@ class RBB_PT_panel(bpy.types.Panel):
             options.prop(props, 'detail_level')
             options.prop(props, 'addin_folder')
         action = layout.row()
-        action.enabled = not props.busy and bool(props.catalog_source) and props.selected_count > 0
+        action.enabled = not runtime.MAINTENANCE and not props.busy and bool(props.catalog_source) and props.selected_count > 0
         action.operator('xivgate_rbb.import_selected', text='Обновить импорт' if props.import_id else 'Импортировать выбранное', icon='IMPORT')
         if props.result_collection:
             layout.label(text=props.result_collection, icon='OUTLINER_COLLECTION')
             layout.label(text=f'{props.result_placements} размещений · {props.result_prototypes} прототипов')
         if props.warning_count:
             layout.operator('xivgate_rbb.warnings', text=f'Отчёт: {props.warning_count} предупреждений', icon='INFO')
+        update = layout.box()
+        update.label(text='AGR Revit Bridge ' + updater.current_version())
+        check = update.row(align=True)
+        check.enabled = not updater.STATE.busy
+        check.operator('xivgate_rbb.check_update', icon='FILE_REFRESH')
+        check.operator('wm.url_open', text='', icon='URL').url = 'https://github.com/' + updater.updates.REPOSITORY
+        if updater.STATE.info and updater.STATE.info.get('available'):
+            install = update.row()
+            install.enabled = not props.busy and not updater.STATE.busy and runtime.STATE.action is None
+            install.operator('xivgate_rbb.install_update', text='Обновить до ' + updater.STATE.info['version'], icon='IMPORT')
+        for line in textwrap.wrap(updater.STATE.message, width=48):
+            update.label(text=line)
 
 
 @persistent
 def _load_pre(*args):
+    updater.cleanup()
     runtime.cleanup()
 
 
 CLASSES = (RBB_Element, RBB_Group, RBB_Warning, RBB_Settings, RBB_UL_groups, RBB_UL_elements, RBB_UL_warnings, RBB_OT_warnings,
            RBB_OT_setup, RBB_OT_scan, RBB_OT_import, RBB_OT_select, RBB_OT_cancel,
-           RBB_OT_show_worker, RBB_PT_panel)
+           RBB_OT_show_worker, RBB_OT_check_update, RBB_OT_install_update, RBB_PT_panel)
 
 
 def register():
@@ -371,6 +408,7 @@ def register():
 
 
 def unregister():
+    updater.cleanup()
     runtime.cleanup()
     if _load_pre in bpy.app.handlers.load_pre:
         bpy.app.handlers.load_pre.remove(_load_pre)
