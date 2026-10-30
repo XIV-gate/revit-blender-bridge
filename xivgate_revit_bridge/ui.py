@@ -127,6 +127,24 @@ def tree_search_changed(props, context):
     rebuild_tree(props)
 
 
+def centering_changed(props, context):
+    if _SYNCING or props.busy or runtime.MAINTENANCE:
+        return
+    align_scene_previews(props)
+    from .spatial_preview import PREVIEW_TAG, SCENE_TAG
+    frame_previews(context, [obj for obj in props.id_data.objects
+                            if obj.get(PREVIEW_TAG) is True and obj.get(SCENE_TAG) == props.id_data])
+
+
+def align_scene_previews(props):
+    from .spatial_preview import PREVIEW_TAG, SCENE_TAG, align_previews
+    scene = props.id_data
+    if scene.library is not None:
+        return
+    if any(obj.get(PREVIEW_TAG) is True and obj.get(SCENE_TAG) == scene for obj in scene.objects):
+        align_previews(scene, catalog_preview_offset(props), preview_parent(scene, props))
+
+
 def sync_groups(props):
     global _SYNCING
     previous = _SYNCING
@@ -227,7 +245,7 @@ class RBB_Settings(bpy.types.PropertyGroup):
     import_materials: BoolProperty(name='Переносить материалы', default=True, description='Создать материалы Blender из доступных данных Revit')
     import_textures: BoolProperty(name='Переносить доступные текстуры', default=True, description='Перенести найденные локальные изображения; отсутствующие файлы перечисляются в отчёте')
     pack_images: BoolProperty(name='Упаковать текстуры в .blend', default=True, description='Встроить найденные изображения в сохранённый .blend для передачи модели')
-    center_model: BoolProperty(name='Разместить около начала координат', default=True, description='Убрать большое смещение координат Revit; исходное смещение сохраняется в данных импорта')
+    center_model: BoolProperty(name='Разместить около начала координат', default=True, description='Общее смещение XY для превью и модели; высоты сохраняются', update=centering_changed)
     load_links: BoolProperty(default=False)
     detail_level: EnumProperty(name='Детализация', items=[('coarse', 'Низкая', ''), ('medium', 'Средняя', ''), ('fine', 'Высокая', '')], default='medium')
     show_advanced: BoolProperty(name='Настройки', default=False, description='Подключение Revit, параметры импорта и рабочие данные — каждый в своём разделе')
@@ -261,6 +279,8 @@ class RBB_Settings(bpy.types.PropertyGroup):
     import_source: StringProperty()
     import_context_json: StringProperty()
     source_offset_json: StringProperty(default='[0,0,0]')
+    preview_offset_json: StringProperty()
+    preview_source: StringProperty()
     origin_valid: BoolProperty(default=False)
     origin_centered: BoolProperty(default=True)
     catalog_source: StringProperty()
@@ -691,27 +711,23 @@ def preview_button(layout, props, kind, identifier, name):
 
 
 def catalog_preview_offset(props):
-    if props.origin_valid and props.import_source == props.catalog_source:
-        return json.loads(props.source_offset_json) if props.origin_centered else (0, 0, 0)
     if not props.center_model:
         return (0, 0, 0)
-    import math
-    minimum, maximum = [math.inf] * 3, [-math.inf] * 3
-    for row in props.elements:
-        if not row.bbox_json:
-            continue
-        try:
-            low, high = json.loads(row.bbox_json)
-            if len(low) != 3 or len(high) != 3:
-                continue
-            if not all(math.isfinite(float(a)) and math.isfinite(float(b)) and a <= b for a, b in zip(low, high)):
-                continue
-            for axis in range(3):
-                minimum[axis] = min(minimum[axis], low[axis])
-                maximum[axis] = max(maximum[axis], high[axis])
-        except (ValueError, TypeError):
-            continue
-    return tuple(a/2 + b/2 for a, b in zip(minimum, maximum)) if math.isfinite(minimum[0]) else (0, 0, 0)
+    if props.origin_valid and props.origin_centered and props.import_source == props.catalog_source:
+        return json.loads(props.source_offset_json)
+    if props.preview_source == props.catalog_source and props.preview_offset_json:
+        return json.loads(props.preview_offset_json)
+    from .core.origin import catalog_origin
+    offset = catalog_origin(props.elements)
+    props.preview_source = props.catalog_source
+    props.preview_offset_json = json.dumps(offset)
+    return offset
+
+
+def preview_parent(scene, props):
+    if props.origin_valid and props.origin_centered == props.center_model:
+        return imported_root(scene, props)
+    return None
 
 
 def imported_root(scene, props):
@@ -724,13 +740,19 @@ def imported_root(scene, props):
 
 
 def frame_preview(context, obj):
+    frame_previews(context, [obj])
+
+
+def frame_previews(context, objects):
     # Explicit preview clicks frame their layer without changing selected objects.
-    space = context.space_data
+    space = context.space_data if context else None
     if space is None or space.type != 'VIEW_3D' or space.region_3d is None:
         return
     from mathutils import Vector
     context.view_layer.update()
-    corners = [obj.matrix_world @ Vector(corner) for corner in obj.bound_box]
+    corners = [obj.matrix_world @ Vector(corner) for obj in objects for corner in obj.bound_box]
+    if not corners:
+        return
     low = Vector(tuple(min(point[axis] for point in corners) for axis in range(3)))
     high = Vector(tuple(max(point[axis] for point in corners) for axis in range(3)))
     space.region_3d.view_location = (low + high) / 2
@@ -780,7 +802,7 @@ class RBB_OT_toggle_preview(bpy.types.Operator):
             if not result['object_name']:
                 self.report({'INFO'}, 'У элементов этого слоя нет корректных габаритов для превью')
                 return {'CANCELLED'}
-            align_previews(context.scene, offset, imported_root(context.scene, props))
+            align_previews(context.scene, offset, preview_parent(context.scene, props))
             frame_preview(context, bpy.data.objects[result['object_name']])
             self.report({'INFO'}, f"Превью «{self.group_name}»: {result['shown']} рамок; повторная кнопка скрывает этот слой")
             return {'FINISHED'}
@@ -948,6 +970,7 @@ def _load_post(*args):
         if scene.library is not None:
             continue
         sync_groups(scene.xivgate_revit_bridge)
+        align_scene_previews(scene.xivgate_revit_bridge)
 
 
 def _initialize_tree():

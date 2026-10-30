@@ -27,6 +27,10 @@ _HELPER_CATEGORIES = frozenset(name.casefold() for name in (
 _CAD_CATEGORY = re.compile(r'\.(?:dwg|dxf)$', re.IGNORECASE)
 
 
+def is_reference_category(name):
+    return str(name or '').strip().casefold().strip('<>').strip() in _HELPER_CATEGORIES
+
+
 def annotate_catalog(catalog):
     """Return advisory facade choices without changing source or user overrides.
 

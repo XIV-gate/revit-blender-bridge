@@ -169,6 +169,9 @@ def begin_scan(scene, *, auto_import=False):
     STATE.scanned_source_hash = source_sha256(source)
     STATE.previous_selection = previous
     STATE.auto_import = auto_import
+    if props.preview_source != str(source):
+        props.preview_source = ''
+        props.preview_offset_json = ''
     from .spatial_preview import clear_preview
     clear_preview(scene)
     props.tree_rows.clear()
@@ -340,6 +343,8 @@ def _start_conversion(manifest):
         command.append('--source-origin')
     elif STATE.props.import_id and STATE.props.origin_valid and STATE.props.origin_centered:
         command.extend(['--offset', *map(str, json.loads(STATE.props.source_offset_json))])
+    elif STATE.props.preview_source == STATE.props.catalog_source and STATE.props.preview_offset_json:
+        command.extend(['--offset', *map(str, json.loads(STATE.props.preview_offset_json))])
     env = os.environ.copy()
     env['PYTHONPATH'] = str(Path(__file__).resolve().parent.parent)
     env['PYTHONDONTWRITEBYTECODE'] = '1'

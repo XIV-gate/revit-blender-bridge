@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 
 from .geometry_cache import matrix_rows, safe_asset_path, validate_prototype
+from .core.texture_roles import height_map_descriptor
 
 
 def srgb(value):
@@ -54,6 +55,18 @@ def build_usd(manifest_path, target_path, *, include_materials=True, include_tex
             usd_material.GetPrim().SetDisplayName(material['name'])
             usd_material.GetPrim().CreateAttribute('revit:source_material_id', Sdf.ValueTypeNames.String, custom=True).Set(str(material.get('source_material_id', key)))
             usd_material.GetPrim().CreateAttribute('revit:material_signature', Sdf.ValueTypeNames.String, custom=True).Set(material_signatures[int(key)])
+            height = height_map_descriptor(material) if include_textures else None
+            if height and height['active']:
+                if safe_asset_path(source.parent, height['path']).is_file():
+                    usd_material.GetPrim().CreateAttribute('revit:height_texture', Sdf.ValueTypeNames.Asset, custom=True).Set(Sdf.AssetPath(height['path']))
+                    usd_material.GetPrim().CreateAttribute('revit:height_amount', Sdf.ValueTypeNames.Double, custom=True).Set(height['amount'])
+                    usd_material.GetPrim().CreateAttribute('revit:height_invert', Sdf.ValueTypeNames.Bool, custom=True).Set(height['invert'])
+                    if type(height.get('rgb_amount')) in (int, float):
+                        usd_material.GetPrim().CreateAttribute('revit:height_rgb_amount', Sdf.ValueTypeNames.Double, custom=True).Set(height['rgb_amount'])
+                else:
+                    missing.append(height['path'])
+            elif height:
+                usd_material.GetPrim().CreateAttribute('revit:height_skip_reason', Sdf.ValueTypeNames.String, custom=True).Set(height['reason'])
             shader = UsdShade.Shader.Define(stage, str(usd_material.GetPath()) + '/PreviewSurface')
             shader.CreateIdAttr('UsdPreviewSurface')
             shader.CreateInput('diffuseColor', Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*[srgb(float(c)) for c in material['color']]))

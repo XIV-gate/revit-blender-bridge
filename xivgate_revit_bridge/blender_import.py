@@ -464,6 +464,27 @@ def import_result(usd_path, *, import_id=None, preserve_instances=True, pack_ima
                 signature = signature_attribute.Get() if signature_attribute else None
                 if isinstance(signature, str) and re.fullmatch(r'[0-9a-f]{64}', signature):
                     material['revit:material_signature'] = signature
+                skip_attribute = prim.GetAttribute('revit:height_skip_reason')
+                if skip_attribute and skip_attribute.Get():
+                    material['revit:height_skip_reason'] = str(skip_attribute.Get())
+                height_attribute = prim.GetAttribute('revit:height_texture')
+                if height_attribute and height_attribute.Get():
+                    from .blender_materials import attach_height_map
+                    asset = height_attribute.Get()
+                    descriptor = {'path': asset.path, 'amount': prim.GetAttribute('revit:height_amount').Get(),
+                                  'invert': prim.GetAttribute('revit:height_invert').Get()}
+                    height_result = attach_height_map(material, descriptor, source.parent)
+                    if height_result['reason']:
+                        material['revit:height_skip_reason'] = height_result['reason']
+                    for image in height_result['images']:
+                        image[OWNER] = identity
+                        image[REVISION] = revision
+                        if pack_images:
+                            image.pack()
+                            packed += 1
+                    rgb_attribute = prim.GetAttribute('revit:height_rgb_amount')
+                    if rgb_attribute and rgb_attribute.Get() is not None:
+                        material['revit:height_source_rgb_amount'] = rgb_attribute.Get()
                 desired_names[material] = _preferred_name(old_materials.get(str(material.get('revit:source_material_id', '')), ''), canonical_material_name)
         # Collection instancing is only the USD transport. Retain its shared mesh
         # data, but remove generated prototype objects and helper collections.

@@ -1,9 +1,13 @@
 """Small authored cache fixture, independent of Autodesk/Blender and private models."""
-import base64
 import hashlib
 import json
 from pathlib import Path
 import struct
+import zlib
+
+
+def _png_chunk(kind, data):
+    return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data) & 0xffffffff)
 
 
 def write_fixture(root, include_ids=None):
@@ -28,9 +32,11 @@ def write_fixture(root, include_ids=None):
             data = struct.pack('<24fq', *[value for vertex in triangles[index] for value in vertex], 7)
             prototypes.append({'id': index, 'offset': binary.tell(), 'bytes': len(data), 'triangles': 1, 'sha256': hashlib.sha256(data).hexdigest()})
             binary.write(data)
-    # One-pixel PNG, used solely to verify texture packaging.
+    # Authored, decodable 2x2 RGBA PNG with varying grayscale height values.
     image = root / 'pixel.png'
-    image.write_bytes(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aRZkAAAAASUVORK5CYII='))
+    pixels = b'\0' + bytes((0, 0, 0, 255, 255, 255, 255, 255)) + b'\0' + bytes((64, 64, 64, 255, 128, 128, 128, 255))
+    image.write_bytes(b'\x89PNG\r\n\x1a\n' + _png_chunk(b'IHDR', struct.pack('>IIBBBBB', 2, 2, 8, 6, 0, 0, 0))
+                      + _png_chunk(b'IDAT', zlib.compress(pixels)) + _png_chunk(b'IEND', b''))
     manifest = {'schema': 1, 'units': 'metres', 'up': 'Z', 'cache_reusable': True, 'cache_dependencies': [],
         'prototypes': prototypes, 'occurrences': occurrences,
         'materials': {'7': {'id': 7, 'source_material_id': 'source-7', 'name': 'Fixture facade material', 'color': [0.7, 0.5, 0.3],

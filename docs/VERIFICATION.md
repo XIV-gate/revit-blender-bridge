@@ -216,3 +216,32 @@ assembly version changed in C#.
 - All six workers rebuilt; final ZIP verified. Every ZIP payload scanned for the
   personal username and Desktop/TEST path in ASCII/UTF-16LE: no matches.
 - ZIP SHA256:dd4df07e8554ae44bf86c2085c210ccdca658f696d8da74f467dc34b739f6b5e.
+
+## Early Access 0.4.3 — preview origin, texture and UV verification
+
+- 110 ordinary Python tests completed successfully (one Windows symlink privilege skip).
+- Isolated Blender5.2.3/4.2.14: real converter -> USD -> editable Mesh -> preview
+  alignment with large coordinates, distant survey points, preserved elevations,
+  checkbox transitions and old-preview repair passed.
+- Both hosts: height-map explicit source amount, UV st, Non-Color, packing/ownership,
+  unchanged base color, existing Normal protection and invalid-image skip passed.
+- Full controller, selective reimport, shared Mesh reuse and export-cache regression,
+  category tree and per-row preview regression passed on Blender5.2.3.
+- Read-only export audit matched the current RVT snapshot by path and SHA256.
+  Its 5203 unique Mesh datablocks all have finite, complete UV layers; 112 textured
+  meshes have varying UV. Twelve textured prototype samples had exact binary/USD/
+  Blender per-loop UV agreement (max error0). This verifies the exported payload,
+  not a fresh Revit opening or the user's unsaved live Blender scene.
+- Four copied bitmap files were decoded. After the height fix, a real two-prototype
+  subset covering all three textured materials used and packed all four with exact
+  SHA256; isolated Cycles CPU renders verified their material nodes. Fifteen bitmap
+  references point to an unavailable source drive; two further references remain
+  ambiguous. No client model, bitmap, private audit or render is committed.
+- Six worker assemblies rebuilt0.4.3.0. Revit2024-2026 live-model coverage and the
+  existing2025/2026 net10 CS1701 baseline caveat are unchanged.
+- Final ZIP installation and real0.4.0->0.4.3->0.4.0 switches, updater rollback,
+  file-load cancellation, retained locked DLLs and no Preferences saves passed in
+  both isolated hosts. ZIP verified; personal username/Desktop paths absent.
+- ZIP SHA256:1414f0e33b80ac0abd11dbcdb885a7478bb477f17b6a6a6888b47a0173b5a8d6.
+- Online Essentials stale metadata was diagnosed from installed Blender source;
+  its native cache and user Preferences were not modified.
