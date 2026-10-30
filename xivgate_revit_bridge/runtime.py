@@ -15,6 +15,7 @@ from .core.jobs import JobSession, read_json, source_sha256
 from .core.launcher import WorkerProcess
 from .core.revit_versions import inspect_revit
 from .core.reporting import report_entries, raw_values
+from .core.diagnostics import Timeline
 
 
 def worker_path(props=None):
@@ -76,12 +77,16 @@ class Runtime:
         self.cache_signature = ''
         self.delta_ids = None
         self.force_scan_done = False
+        self.timings = Timeline()
+        self.timing_write_error = ''
 
     @property
     def props(self):
         return self.scene.xivgate_revit_bridge
 
     def stop(self):
+        if self.scene is not None and self.action is not None:
+            _record_stage('stopped', terminal=True)
         if self.converter and self.converter.poll() is None:
             self.converter.terminate()
             try:
@@ -112,7 +117,8 @@ def _timer_start():
         bpy.app.timers.register(tick, first_interval=0.2)
 
 
-def _message(state, message, *, busy=False, progress=None):
+def _message(state, message, *, busy=False, progress=None, timing_stage=None):
+    _record_stage(timing_stage or state.lower(), terminal=not busy)
     props = STATE.props
     props.status = state
     props.message = message
@@ -138,6 +144,67 @@ def set_warnings(props, values):
     props.warning_count = len(props.warnings)
 
 
+def _process_ids():
+    result = {'blender': os.getpid()}
+    for name, process in (('revit', STATE.worker), ('converter', STATE.converter)):
+        pid = getattr(process, 'pid', None)
+        if type(pid) is int and pid > 0:
+            result[name] = pid
+    return result
+
+
+def _record_stage(stage, *, terminal=False, scene=None):
+    from .core.jobs import atomic_write_json
+    from .core.resources import memory_snapshot
+    trace = STATE.timings
+    request_id = None if stage in ('preparing_scan', 'checking_source_and_cache') else STATE.request_id
+    if trace.events and (trace.events[-1]['stage'], trace.events[-1]['request_id']) == (stage, request_id):
+        return
+    try:
+        memory = memory_snapshot(_process_ids())
+    except (OSError, ValueError, TypeError) as error:
+        memory = {'unavailable': [str(error)]}
+    trace.transition(stage, request_id=request_id, terminal=terminal, memory=memory)
+    if STATE.session and (scene is None or STATE.scene == scene):
+        try:
+            atomic_write_json(STATE.session.directory / 'client_timing.json', trace.snapshot())
+        except (OSError, ValueError) as error:
+            STATE.timing_write_error = str(error)
+
+
+def export_logs(scene, target):
+    import platform
+    from . import bl_info
+    from .core.diagnostics import export_bundle, timestamp
+    from .core.resources import gpu_memory, memory_snapshot
+    props = scene.xivgate_revit_bridge
+    directories = [props.job_directory]
+    if STATE.scene == scene and STATE.session:
+        directories.append(STATE.session.directory)
+    if STATE.scene == scene and STATE.file_root:
+        # A cache hit can reference a different, verified job's output revision.
+        directories.append(STATE.file_root.parent.parent)
+    options = {name: getattr(props, name) for name in ('detail_level', 'preserve_instances',
+        'import_materials', 'import_textures', 'pack_images', 'center_model', 'reuse_export_cache')}
+    try:
+        revit = inspect_revit(bpy.path.abspath(props.revit_exe))
+    except (OSError, ValueError, KeyError) as error:
+        revit = {'unavailable': str(error), 'path': props.revit_exe}
+    snapshot = dict(captured=timestamp(), addon_version='.'.join(map(str, bl_info['version'])),
+        blender_version=bpy.app.version_string, python_version=sys.version, os=platform.platform(),
+        cpu=platform.processor(), logical_cpus=os.cpu_count(), revit=revit,
+        status=props.status, message=props.message, busy=props.busy,
+        selected_elements=props.selected_count, catalog_elements=len(props.elements),
+        placements=props.result_placements, prototypes=props.result_prototypes,
+        options=options, warnings=[dict(message=row.message, severity=row.severity, count=row.count,
+            details=row.raw_json[:16384], details_truncated=len(row.raw_json) > 16384) for row in list(props.warnings)[:1000]],
+        warnings_total=props.warning_count,
+        timings=STATE.timings.snapshot() if STATE.scene == scene else None,
+        timing_write_error=STATE.timing_write_error,
+        memory=memory_snapshot(_process_ids()), gpu_memory=gpu_memory())
+    return export_bundle(target, directories, snapshot)
+
+
 def record_failure(scene, error, action=None):
     """Keep failures in the scene report and an owned job, never just a popup."""
     import traceback
@@ -145,6 +212,8 @@ def record_failure(scene, error, action=None):
     from .core.jobs import atomic_write_json
     props = scene.xivgate_revit_bridge
     owns_state = STATE.scene == scene
+    if owns_state:
+        _record_stage('error', terminal=True)
     phase = action or (STATE.action if owns_state else None) or 'operation'
     details = ''.join(traceback.format_exception(type(error), error, error.__traceback__))
     entry = f'Ошибка операции ({phase}): {error}\n{details}'
@@ -180,6 +249,7 @@ def begin_scan(scene, *, auto_import=False):
         raise RuntimeError('Дождитесь завершения текущего задания')
     if os.name != 'nt':
         raise RuntimeError('Локальный Revit требует Windows')
+    _record_stage('preparing_scan', scene=scene)
     from .workflow import prepare_settings
     cache = prepare_settings(scene)
     exe = Path(bpy.path.abspath(props.revit_exe))
@@ -288,6 +358,7 @@ def begin_export(scene, *, force_refresh=False):
     ids = selected_ids(props)
     if not ids:
         raise ValueError('Не выбран ни один элемент')
+    _record_stage('checking_source_and_cache', scene=scene)
     STATE.force_refresh = force_refresh
     if force_refresh and not STATE.force_scan_done:
         STATE.force_scan_done = True
@@ -487,7 +558,7 @@ def tick():
             allowed = {'OPENING': 'SCANNING', 'SCANNING': 'SCANNING', 'EXPORTING': 'EXPORTING',
                        'REQUIRES_ACTION': 'REQUIRES_ACTION', 'STARTING': 'STARTING'}
             _message(allowed.get(name, STATE.props.status), str(status.get('message', 'Обработка модели…')),
-                     busy=True, progress=status.get('progress', STATE.props.progress))
+                     busy=True, progress=status.get('progress', STATE.props.progress), timing_stage=name.lower() or 'worker')
         elif time.monotonic() - STATE.started > 45:
             _message('STARTING', 'Revit запускается. Если появилось его окно с вопросом, используйте «Показать Revit».', busy=True)
         if STATE.worker.poll() is not None:

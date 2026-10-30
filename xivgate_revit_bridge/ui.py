@@ -5,6 +5,7 @@ from pathlib import Path
 import textwrap
 
 import bpy
+from bpy_extras.io_utils import ExportHelper
 from bpy.app.handlers import persistent
 from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProperty,
                        IntProperty, PointerProperty, StringProperty)
@@ -501,6 +502,29 @@ class RBB_OT_copy_report_details(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class RBB_OT_export_logs(bpy.types.Operator, ExportHelper):
+    bl_idname = 'xivgate_rbb.export_logs'
+    bl_label = 'Экспорт логов'
+    bl_description = 'Сохранить ZIP с журналами, временем этапов, версиями, RAM и VRAM; модели и текстуры не включаются. Доступно во время обработки'
+    filename_ext = '.zip'
+    filter_glob: StringProperty(default='*.zip', options={'HIDDEN'})
+
+    def invoke(self, context, event):
+        from datetime import datetime
+        name = 'AGR_RevitBridge_Logs_' + datetime.now().strftime('%Y-%m-%d_%H-%M-%S') + '.zip'
+        self.filepath = str(Path(bpy.data.filepath).parent / name) if bpy.data.filepath else name
+        return ExportHelper.invoke(self, context, event)
+
+    def execute(self, context):
+        try:
+            result = runtime.export_logs(context.scene, bpy.path.abspath(self.filepath))
+        except (OSError, ValueError, RuntimeError) as error:
+            self.report({'ERROR'}, 'Не удалось экспортировать логи: ' + str(error))
+            return {'CANCELLED'}
+        self.report({'INFO'}, f"Логи сохранены: {result['path']} (файлов: {result['files']})")
+        return {'FINISHED'}
+
+
 class RBB_OT_readable_names(bpy.types.Operator):
     bl_idname = 'xivgate_rbb.readable_names'
     bl_label = 'Обновить имена объектов и мешей'
@@ -945,6 +969,7 @@ class RBB_PT_panel(bpy.types.Panel):
             rename.operator('xivgate_rbb.readable_names', icon='SORTALPHA')
         if props.warning_count:
             layout.operator('xivgate_rbb.warnings', text=f'Отчёт: {props.warning_count} записей', icon='INFO')
+        layout.operator('xivgate_rbb.export_logs', icon='EXPORT')
         update = layout.box()
         update.label(text='AGR Revit Bridge ' + updater.current_version())
         check = update.row(align=True)
@@ -995,7 +1020,7 @@ def _initialize_tree():
 
 CLASSES = (RBB_Element, RBB_Group, RBB_TreeRow, RBB_Warning, RBB_Settings, RBB_UL_catalog_tree, RBB_OT_element_info, RBB_UL_groups, RBB_UL_elements, RBB_UL_warnings, RBB_OT_warnings,
            RBB_OT_choose_revit,
-           RBB_OT_toggle_group, RBB_OT_inspect_group, RBB_OT_clear_scope, RBB_OT_copy_report_details, RBB_OT_readable_names,
+           RBB_OT_toggle_group, RBB_OT_inspect_group, RBB_OT_clear_scope, RBB_OT_copy_report_details, RBB_OT_export_logs, RBB_OT_readable_names,
            RBB_OT_setup, RBB_OT_scan, RBB_OT_import, RBB_OT_select, RBB_OT_cancel,
            RBB_OT_show_worker, RBB_OT_cache, RBB_OT_toggle_preview, RBB_OT_check_update, RBB_OT_install_update, RBB_PT_panel)
 
