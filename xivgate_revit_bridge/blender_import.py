@@ -7,6 +7,7 @@ import uuid
 
 import bpy
 from mathutils import Matrix
+from .core.naming import object_name, mesh_name, is_generated_name
 
 
 OWNER = 'xivgate_rbb_import_id'
@@ -18,6 +19,73 @@ CATEGORY = 'xivgate_rbb_category'
 AVAILABLE_IDS = 'xivgate_rbb_available_element_ids'
 AVAILABLE_GEOMETRY_IDS = 'xivgate_rbb_available_geometry_ids'
 STASH_FLAG = 'xivgate_rbb_stash'
+GENERATED_NAME = 'xivgate_rbb_generated_name'
+USER_NAME = 'xivgate_rbb_user_name'
+INDEPENDENT_MESH = 'xivgate_rbb_independent_mesh'
+
+
+def _automatic_name(data):
+    return not data.get(USER_NAME) and is_generated_name(data.name, data.get(GENERATED_NAME))
+
+
+def _mark_name(data, generated):
+    if generated:
+        data[GENERATED_NAME] = data.name
+        data.pop(USER_NAME, None)
+    else:
+        data[USER_NAME] = True
+        data.pop(GENERATED_NAME, None)
+
+
+def rename_owned_import(import_id):
+    """Rename only this active import's generated names; retain user/foreign data."""
+    roots = [item for item in bpy.data.collections if item.get(OWNER) == import_id and item.get(ROOT_FLAG)]
+    if len(roots) != 1 or roots[0] not in bpy.context.scene.collection.children_recursive:
+        raise ValueError('Импорт Revit не найден в активной сцене')
+    root = roots[0]
+    if any(scene != bpy.context.scene and root in scene.collection.children_recursive for scene in bpy.data.scenes):
+        raise RuntimeError('Импорт используется другой сценой; общие данные нельзя переименовать независимо')
+    revision = root.get(REVISION)
+    scope = set(root.all_objects)
+    for collection in bpy.data.collections:
+        if collection.get(STASH_FLAG) and collection.get(OWNER) == import_id and collection.get(REVISION) == revision:
+            if not any(collection in scene.collection.children_recursive for scene in bpy.data.scenes):
+                scope.update(collection.objects)
+    objects = [obj for obj in scope if obj.get(OWNER) == import_id and obj.get(REVISION) == revision
+               and obj.type == 'MESH' and 'revit:id' in obj]
+    object_set = set(objects)
+    mesh_users = {}
+    for obj in bpy.data.objects:
+        if obj.type == 'MESH':
+            mesh_users.setdefault(obj.data, set()).add(obj)
+    result = {'import_id': import_id, 'objects': 0, 'meshes': 0, 'skipped_custom': 0, 'skipped_foreign': 0}
+    for obj in sorted(objects, key=lambda item: str(item.get('revit:id', ''))):
+        if obj.library or any(obj.name in scene.objects for scene in bpy.data.scenes if scene != bpy.context.scene):
+            result['skipped_foreign'] += 1
+        elif _automatic_name(obj):
+            previous = obj.name
+            obj.name = object_name(obj)
+            _mark_name(obj, True)
+            result['objects'] += obj.name != previous
+        else:
+            result['skipped_custom'] += 1
+    for mesh in {obj.data for obj in objects}:
+        users = mesh_users[mesh]
+        if (mesh.library or mesh.get(OWNER) != import_id or mesh.get(REVISION) != revision
+                or not users.issubset(object_set)
+                or any(obj.name in scene.objects for obj in users for scene in bpy.data.scenes if scene != bpy.context.scene)):
+            result['skipped_foreign'] += 1
+            continue
+        if not _automatic_name(mesh):
+            result['skipped_custom'] += 1
+            continue
+        representative = min(users, key=lambda obj: str(obj.get('revit:id', '')))
+        identifier = str(representative['revit:id']) if mesh.get(INDEPENDENT_MESH) else None
+        previous = mesh.name
+        mesh.name = mesh_name(representative, mesh.get('revit:geometry_signature', ''), identifier)
+        _mark_name(mesh, True)
+        result['meshes'] += mesh.name != previous
+    return result
 
 
 def _base_name(name):
@@ -249,7 +317,17 @@ def import_result(usd_path, *, import_id=None, preserve_instances=True, pack_ima
     if any(obj.name in scene.objects for scene in bpy.data.scenes if scene != bpy.context.scene for obj in old_owned_objects):
         raise RuntimeError('Объекты этого импорта также используются другой сценой. Выполните независимый импорт перед обновлением.')
     old_objects = {str(obj['revit:id']): obj.name for obj in bpy.data.objects
-                   if obj.get(OWNER) == identity and obj.get(REVISION) in old_revisions and 'revit:id' in obj}
+                   if obj.get(OWNER) == identity and obj.get(REVISION) in old_revisions
+                   and 'revit:id' in obj and not _automatic_name(obj)}
+    old_mesh_names = {str(obj['revit:id']): obj.data.name for obj in old_owned_objects
+                      if obj.type == 'MESH' and 'revit:id' in obj and obj.data.get(OWNER) == identity
+                      and not _automatic_name(obj.data)}
+    old_mesh_signatures = {}
+    for mesh in sorted(bpy.data.meshes, key=lambda item: (-item.users, item.name)):
+        signature = mesh.get('revit:geometry_signature')
+        if (mesh.get(OWNER) == identity and mesh.get(REVISION) in old_revisions
+                and signature and not _automatic_name(mesh)):
+            old_mesh_signatures.setdefault(str(signature), mesh.name)
     old_categories = {}
     for item in bpy.data.collections:
         if item.get(OWNER) == identity and item.get(REVISION) in old_revisions:
@@ -260,6 +338,7 @@ def import_result(usd_path, *, import_id=None, preserve_instances=True, pack_ima
                      if item.get(OWNER) == identity and item.get(REVISION) in old_revisions and 'revit:source_material_id' in item}
     before = _snapshot()
     desired_names = {}
+    generated_names = {}
     try:
         result = bpy.ops.wm.usd_import(filepath=str(source), support_scene_instancing=True,
             import_cameras=False, import_lights=False, import_materials=True, import_usd_preview=True,
@@ -306,12 +385,8 @@ def import_result(usd_path, *, import_id=None, preserve_instances=True, pack_ima
                 attribute = prim.GetAttribute(property_name)
                 if attribute and attribute.Get() is not None:
                     obj[property_name] = str(attribute.Get())
-            placement_name = str(prim.GetName()) + ('' if preserve_instances else '_mesh')
+            placement_name = object_name(obj)
             previous_name = old_objects.get(str(obj['revit:id']), '')
-            if not preserve_instances and previous_name:
-                generated = re.fullmatch(re.escape(str(prim.GetName())) + r'(?:\.\d+)*_mesh(?:\.\d+)*', previous_name)
-                if generated:
-                    previous_name = placement_name
             target = conversion @ Matrix(tuple(tuple(row) for row in cache.GetLocalToWorldTransform(prim))).transposed()
             target.translation *= units
             if root:
@@ -331,6 +406,7 @@ def import_result(usd_path, *, import_id=None, preserve_instances=True, pack_ima
                 replacement[key] = value
             replacement.data[OWNER] = identity
             replacement.data[REVISION] = revision
+            replacement.data[INDEPENDENT_MESH] = not preserve_instances
             mesh_prim = prim.GetChild('mesh')
             geometry_signature = mesh_prim.GetAttribute('revit:geometry_signature') if mesh_prim else None
             signature = geometry_signature.Get() if geometry_signature else None
@@ -340,7 +416,8 @@ def import_result(usd_path, *, import_id=None, preserve_instances=True, pack_ima
             target = target @ member.matrix_local
             replacement.matrix_world = target
             obj = replacement
-            desired_names[obj] = _preferred_name(previous_name, placement_name)
+            desired_names[obj] = previous_name or placement_name
+            generated_names[obj] = not bool(previous_name)
             expected[obj] = target
             category = str(obj.get('revit:category', 'Прочее'))
             if category not in groups:
@@ -403,6 +480,18 @@ def import_result(usd_path, *, import_id=None, preserve_instances=True, pack_ima
             if unused:
                 bpy.data.batch_remove(ids=tuple(unused))
         remaining_placements = [obj for obj in expected]
+        mesh_placements = {}
+        for obj in remaining_placements:
+            mesh_placements.setdefault(obj.data, []).append(obj)
+        for mesh, users in mesh_placements.items():
+            if mesh in before['meshes']:
+                continue
+            representative = min(users, key=lambda obj: str(obj['revit:id']))
+            identifier = str(representative['revit:id'])
+            signature = mesh.get('revit:geometry_signature', '')
+            custom_name = (old_mesh_signatures.get(signature) if preserve_instances else None) or old_mesh_names.get(identifier)
+            desired_names[mesh] = custom_name or mesh_name(representative, signature, None if preserve_instances else identifier)
+            generated_names[mesh] = not bool(custom_name)
         collection[SELECTION] = json.dumps(sorted({str(value) for value in selected_element_ids}
                                                   if selected_element_ids is not None else {_element_id(obj) for obj in remaining_placements}))
         collection[GEOMETRY_IDS] = json.dumps(sorted({_element_id(obj) for obj in remaining_placements}))
@@ -414,6 +503,8 @@ def import_result(usd_path, *, import_id=None, preserve_instances=True, pack_ima
             if old and old != revision:
                 _remove_revision(old)
         _restore_names(final_created, desired_names)
+        for data, generated in generated_names.items():
+            _mark_name(data, generated)
         return {'import_id': identity, 'revision': revision, 'collection': collection.name,
                 'source_offset': list(stage.GetPrimAtPath('/World').GetAttribute('revit:source_offset_metres').Get()),
                 'placements': len(expected), 'prototypes': len({str(prim.GetPrototype().GetPath()) for prim in prims.values()}),

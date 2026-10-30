@@ -14,6 +14,7 @@ from .core.installer import manifest_matches
 from .core.jobs import JobSession, read_json, source_sha256
 from .core.launcher import WorkerProcess
 from .core.revit_versions import inspect_revit
+from .core.reporting import report_entries, raw_values
 
 
 def worker_path(props=None):
@@ -125,10 +126,15 @@ def _message(state, message, *, busy=False, progress=None):
 
 
 def _warnings(values):
-    props = STATE.props
+    set_warnings(STATE.props, values)
+
+
+def set_warnings(props, values):
     props.warnings.clear()
-    for value in dict.fromkeys(map(str, values)):
-        props.warnings.add().message = value
+    for entry in report_entries(values):
+        row = props.warnings.add()
+        for key, value in entry.items():
+            setattr(row, key, value)
     props.warning_count = len(props.warnings)
 
 
@@ -167,6 +173,8 @@ def begin_scan(scene, *, auto_import=False):
     props.categories.clear()
     props.worksets.clear()
     props.types.clear()
+    props.scope_kind = props.scope_id = props.scope_label = ''
+    props.selection_filter = 'all'
     props.catalog_source = ''
     if STATE.worker is None or STATE.worker.poll() is not None:
         STATE.session = JobSession.create(cache)
@@ -370,7 +378,7 @@ def _apply_import():
     props.origin_valid = True
     props.origin_centered = STATE.pending_options['center_model']
     props.result_collection = result['collection']
-    _warnings([item.message for item in props.warnings] + ['Недоступно изображение: ' + path for path in result['missing_images']])
+    _warnings(raw_values(props.warnings) + ['Недоступно изображение: ' + path for path in result['missing_images']])
     props.result_placements = result['placements']
     props.result_prototypes = result['prototypes']
     STATE.action = None
@@ -400,7 +408,7 @@ def tick():
             response = read_json(STATE.conversion_response)
             if code != 0 or not response or not response.get('success'):
                 raise RuntimeError((response or {}).get('error', 'Не удалось подготовить геометрию; см. conversion.log'))
-            _warnings([item.message for item in STATE.props.warnings] + ['Не найдена текстура: ' + path for path in response.get('missing_textures', [])])
+            _warnings(raw_values(STATE.props.warnings) + ['Не найдена текстура: ' + path for path in response.get('missing_textures', [])])
             _apply_import()
             return .25 if STATE.action else None
         response = STATE.session.read_response(STATE.request_id)
@@ -422,7 +430,7 @@ def tick():
                     try:
                         record_export(STATE.cache_index, STATE.cache_signature, _within_job(response['manifest_path']))
                     except (CacheError, OSError) as error:
-                        _warnings([item.message for item in STATE.props.warnings] + ['Кэш не сохранён: ' + str(error)])
+                        _warnings(raw_values(STATE.props.warnings) + ['Кэш не сохранён: ' + str(error)])
                 _start_conversion(response['manifest_path'])
                 return 0.25
         status = STATE.session.read_status()

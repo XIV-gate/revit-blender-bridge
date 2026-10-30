@@ -1,5 +1,6 @@
 """User-facing Blender panel. All Blender calls happen on its main thread."""
 import os
+import json
 from pathlib import Path
 import textwrap
 
@@ -10,6 +11,8 @@ from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProp
 
 from . import runtime, updater, workflow
 from .core.catalog import initial_selection
+from .core.selection_view import group_state, matches, exclusion_summary
+from .core.reporting import raw_values
 
 
 _SYNCING = False
@@ -112,6 +115,9 @@ class RBB_Group(bpy.types.PropertyGroup):
 
 class RBB_Warning(bpy.types.PropertyGroup):
     message: StringProperty()
+    severity: StringProperty(default='WARNING')
+    count: IntProperty(default=1)
+    raw_json: StringProperty()
 
 
 def _default_revit():
@@ -131,15 +137,24 @@ class RBB_Settings(bpy.types.PropertyGroup):
     catalog_worker_key: StringProperty()
     addin_folder: StringProperty(name='Каталог подключения Revit', subtype='DIR_PATH', description='Обычно определяется автоматически; нужен только при нестандартной установке')
     preserve_instances: BoolProperty(name='Сохранять инстансы', default=True, description='Редактируемые Mesh-объекты с общими данными, как Alt+D')
-    import_materials: BoolProperty(name='Переносить материалы', default=True)
-    import_textures: BoolProperty(name='Переносить доступные текстуры', default=True)
-    pack_images: BoolProperty(name='Упаковать текстуры в .blend', default=True)
-    center_model: BoolProperty(name='Разместить около начала координат', default=True)
+    import_materials: BoolProperty(name='Переносить материалы', default=True, description='Создать материалы Blender из доступных данных Revit')
+    import_textures: BoolProperty(name='Переносить доступные текстуры', default=True, description='Перенести найденные локальные изображения; отсутствующие файлы перечисляются в отчёте')
+    pack_images: BoolProperty(name='Упаковать текстуры в .blend', default=True, description='Встроить найденные изображения в сохранённый .blend для передачи модели')
+    center_model: BoolProperty(name='Разместить около начала координат', default=True, description='Убрать большое смещение координат Revit; исходное смещение сохраняется в данных импорта')
     load_links: BoolProperty(default=False)
     detail_level: EnumProperty(name='Детализация', items=[('coarse', 'Низкая', ''), ('medium', 'Средняя', ''), ('fine', 'Высокая', '')], default='medium')
-    show_advanced: BoolProperty(name='Настройки', default=False)
-    list_mode: EnumProperty(name='Показать', items=[('categories', 'Категории', ''), ('worksets', 'Рабочие наборы', ''), ('types', 'Типы', ''), ('elements', 'Объекты', '')])
+    show_advanced: BoolProperty(name='Настройки', default=False, description='Показать путь Revit, рабочую папку, детализацию и дополнительные действия')
+    list_mode: EnumProperty(name='Показать', items=[('categories', 'Категории', 'Группировать элементы по категориям Revit'),
+        ('worksets', 'Рабочие наборы', 'Группировать элементы по рабочим наборам Revit'),
+        ('types', 'Типы', 'Группировать по семейству и типу; один тип можно включить целиком'),
+        ('elements', 'Объекты', 'Выбирать отдельные элементы и видеть причину рекомендации')])
     search: StringProperty(name='Поиск', options={'TEXTEDIT_UPDATE'})
+    selection_filter: EnumProperty(name='Состав списка', items=[('all', 'Все', ''),
+        ('selected', 'Выбранные', 'Фактически отмеченные для импорта'),
+        ('excluded', 'Исключённые', 'Не отмеченные для импорта; можно включить вручную')])
+    scope_kind: StringProperty()
+    scope_id: StringProperty()
+    scope_label: StringProperty()
     elements: CollectionProperty(type=RBB_Element)
     categories: CollectionProperty(type=RBB_Group)
     worksets: CollectionProperty(type=RBB_Group)
@@ -172,14 +187,17 @@ class RBB_Settings(bpy.types.PropertyGroup):
 
 class RBB_UL_warnings(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        layout.label(text=item.message.replace('\n', ' '), icon='INFO')
+        layout.label(text=item.message.replace('\n', ' '), icon='INFO' if item.severity == 'INFO' else 'ERROR')
 
 
 class RBB_OT_warnings(bpy.types.Operator):
     bl_idname = 'xivgate_rbb.warnings'
     bl_label = 'Отчёт Revit'
+    bl_description = 'Открыть ошибки, предупреждения и сводную информацию; записи без отдельной геометрии объединены'
 
     def invoke(self, context, event):
+        props = context.scene.xivgate_revit_bridge
+        runtime.set_warnings(props, raw_values(props.warnings))
         return context.window_manager.invoke_props_dialog(self, width=800)
 
     def draw(self, context):
@@ -188,6 +206,7 @@ class RBB_OT_warnings(bpy.types.Operator):
         if 0 <= props.warning_index < len(props.warnings):
             for line in textwrap.wrap(props.warnings[props.warning_index].message, width=100):
                 self.layout.label(text=line)
+            self.layout.operator('xivgate_rbb.copy_report_details', text='Копировать подробности выбранной записи', icon='COPYDOWN')
 
     def execute(self, context):
         return {'FINISHED'}
@@ -196,9 +215,12 @@ class RBB_OT_warnings(bpy.types.Operator):
 class RBB_UL_groups(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         row = layout.row(align=True)
-        row.prop(item, 'selected', text='')
+        state = group_state(item.selected_count, item.count)
+        toggle = row.operator('xivgate_rbb.toggle_group', text='', emboss=False,
+                              icon={'all': 'CHECKBOX_HLT', 'partial': 'REMOVE', 'none': 'CHECKBOX_DEHLT'}[state])
+        toggle.kind, toggle.group_id = item.group_kind, item.group_id
         row.label(text=item.name)
-        row.label(text=f'{item.selected_count}/{item.count}')
+        row.label(text=f'{item.selected_count}/{item.count}' + (' · частично' if state == 'partial' else ''))
 
     def filter_items(self, context, data, propname):
         props = context.scene.xivgate_revit_bridge
@@ -216,12 +238,109 @@ class RBB_UL_elements(bpy.types.UIList):
         row.label(text=item.category_name)
 
     def filter_items(self, context, data, propname):
-        query = context.scene.xivgate_revit_bridge.search.casefold().strip()
+        props = context.scene.xivgate_revit_bridge
         flags = []
         for item in getattr(data, propname):
-            text = ' '.join((item.name, item.category_name, item.workset_name, item.type_name, item.family_name, item.element_id)).casefold()
-            flags.append(self.bitflag_filter_item if not query or query in text else 0)
+            visible = matches(item, query=props.search, scope_kind=props.scope_kind,
+                              scope_id=props.scope_id, status=props.selection_filter)
+            flags.append(self.bitflag_filter_item if visible else 0)
         return flags, []
+
+
+def active_group(props):
+    fields = {'categories': ('categories', 'category_index'), 'worksets': ('worksets', 'workset_index'),
+              'types': ('types', 'type_index')}
+    if props.list_mode not in fields:
+        return None
+    field, index_field = fields[props.list_mode]
+    rows, index = getattr(props, field), getattr(props, index_field)
+    return rows[index] if 0 <= index < len(rows) else None
+
+
+class RBB_OT_toggle_group(bpy.types.Operator):
+    bl_idname = 'xivgate_rbb.toggle_group'
+    bl_label = 'Изменить выбор группы'
+    bl_description = 'Частично или не выбрано: выбрать всю группу. Выбрано всё: снять выбор'
+    kind: StringProperty()
+    group_id: StringProperty()
+
+    def execute(self, context):
+        props = context.scene.xivgate_revit_bridge
+        if props.busy or runtime.MAINTENANCE:
+            return {'CANCELLED'}
+        rows = {'category': props.categories, 'workset': props.worksets, 'type': props.types}.get(self.kind, [])
+        item = next((row for row in rows if row.group_id == self.group_id), None)
+        if item is None:
+            return {'CANCELLED'}
+        item.selected = group_state(item.selected_count, item.count) != 'all'
+        return {'FINISHED'}
+
+
+class RBB_OT_inspect_group(bpy.types.Operator):
+    bl_idname = 'xivgate_rbb.inspect_group'
+    bl_label = 'Показать исключённые'
+    bl_description = 'Открыть элементы этой группы с объяснением рекомендации; галочки задаёт пользователь'
+    excluded_only: BoolProperty(default=True)
+
+    def execute(self, context):
+        props = context.scene.xivgate_revit_bridge
+        group = active_group(props)
+        if group is None:
+            return {'CANCELLED'}
+        props.scope_kind, props.scope_id, props.scope_label = group.group_kind, group.group_id, group.name
+        props.selection_filter = 'excluded' if self.excluded_only else 'all'
+        props.search = ''
+        props.list_mode = 'elements'
+        props.element_index = next((index for index, row in enumerate(props.elements)
+            if matches(row, scope_kind=props.scope_kind, scope_id=props.scope_id, status=props.selection_filter)), 0)
+        return {'FINISHED'}
+
+
+class RBB_OT_clear_scope(bpy.types.Operator):
+    bl_idname = 'xivgate_rbb.clear_scope'
+    bl_label = 'Показать все группы'
+    bl_description = 'Сбросить ограничение текущей группой, поиск и фильтр списка; выбранные галочки сохраняются'
+
+    def execute(self, context):
+        props = context.scene.xivgate_revit_bridge
+        props.scope_kind = props.scope_id = props.scope_label = ''
+        props.search = ''
+        props.selection_filter = 'all'
+        return {'FINISHED'}
+
+
+class RBB_OT_copy_report_details(bpy.types.Operator):
+    bl_idname = 'xivgate_rbb.copy_report_details'
+    bl_label = 'Копировать подробности'
+    bl_description = 'Скопировать исходные сообщения и ID из выбранной сводной записи в буфер обмена'
+
+    def execute(self, context):
+        props = context.scene.xivgate_revit_bridge
+        if not 0 <= props.warning_index < len(props.warnings):
+            return {'CANCELLED'}
+        context.window_manager.clipboard = '\n'.join(raw_values([props.warnings[props.warning_index]]))
+        self.report({'INFO'}, 'Исходные сообщения и ID скопированы')
+        return {'FINISHED'}
+
+
+class RBB_OT_readable_names(bpy.types.Operator):
+    bl_idname = 'xivgate_rbb.readable_names'
+    bl_label = 'Обновить имена объектов и мешей'
+    bl_description = 'Исправить служебные имена текущего импорта по данным Revit; пользовательские имена сохраняются'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        props = context.scene.xivgate_revit_bridge
+        if not props.import_id or props.busy or runtime.MAINTENANCE:
+            return {'CANCELLED'}
+        from .blender_import import rename_owned_import
+        try:
+            result = rename_owned_import(props.import_id)
+        except (ValueError, RuntimeError) as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+        self.report({'INFO'}, f"Обновлено объектов: {result['objects']}; мешей: {result['meshes']}. Пользовательские имена сохранены.")
+        return {'FINISHED'}
 
 
 class RBB_OT_setup(bpy.types.Operator):
@@ -258,6 +377,7 @@ class RBB_OT_setup(bpy.types.Operator):
 class RBB_OT_scan(bpy.types.Operator):
     bl_idname = 'xivgate_rbb.scan'
     bl_label = 'Получить список элементов'
+    bl_description = 'Прочитать рабочую копию RVT в локальном Revit и показать каталог до импорта; предыдущий выбор сохраняется по ID'
     def invoke(self, context, event):
         try:
             self.cache = str(workflow.prepare_settings(context.scene))
@@ -294,8 +414,14 @@ class RBB_OT_scan(bpy.types.Operator):
 class RBB_OT_import(bpy.types.Operator):
     bl_idname = 'xivgate_rbb.import_selected'
     bl_label = 'Импортировать выбранное'
+    bl_description = 'Применить отмеченный состав: использовать уже загруженные элементы, а недостающие получить из Revit'
     bl_options = {'REGISTER', 'UNDO'}
     force_refresh: BoolProperty(default=False, options={'SKIP_SAVE'})
+    @classmethod
+    def description(cls, context, properties):
+        if properties.force_refresh:
+            return 'Заново прочитать RVT и перевыгрузить выбранный набор; это полное обновление из исходника, которое может занять время'
+        return cls.bl_description
     def execute(self, context):
         try:
             runtime.begin_export(context.scene, force_refresh=self.force_refresh)
@@ -308,13 +434,34 @@ class RBB_OT_import(bpy.types.Operator):
 class RBB_OT_select(bpy.types.Operator):
     bl_idname = 'xivgate_rbb.select'
     bl_label = 'Изменить выбор'
-    mode: EnumProperty(items=[('all', 'Всё', ''), ('none', 'Ничего', ''), ('recommended', 'Рекомендуемое', '')])
+    bl_description = 'Изменить только галочки выбора до импорта; изменения модели применяются кнопкой импорта'
+    mode: EnumProperty(items=[('all', 'Всё', 'Отметить все элементы выбранной области'),
+        ('none', 'Ничего', 'Снять отметки у всех элементов выбранной области'),
+        ('recommended', 'Рекомендуемое', 'Восстановить предложенный плагином набор; ручной выбор этой области будет заменён')])
+    scope: EnumProperty(items=[('model', 'Вся модель', ''), ('group', 'Текущая группа', ''),
+                              ('visible', 'Видимые строки', '')])
+    @classmethod
+    def description(cls, context, properties):
+        areas = {'model': 'во всей модели', 'group': 'в текущей группе', 'visible': 'только в показанных строках с учётом поиска и фильтра'}
+        actions = {'all': 'Отметить все элементы', 'none': 'Снять отметки',
+                   'recommended': 'Восстановить рекомендации плагина вместо ручного выбора'}
+        return actions.get(properties.mode, 'Изменить выбор') + ' ' + areas.get(properties.scope, '') + '. Затем нажмите импорт.'
     def execute(self, context):
         global _SYNCING
         props = context.scene.xivgate_revit_bridge
+        if props.busy or runtime.MAINTENANCE:
+            return {'CANCELLED'}
+        group = active_group(props) if self.scope == 'group' else None
+        if self.scope == 'group' and group is None:
+            return {'CANCELLED'}
         _SYNCING = True
         try:
             for item in props.elements:
+                if group is not None and getattr(item, group.group_kind + '_id') != group.group_id:
+                    continue
+                if self.scope == 'visible' and not matches(item, query=props.search,
+                        scope_kind=props.scope_kind, scope_id=props.scope_id, status=props.selection_filter):
+                    continue
                 item.selected = self.mode == 'all' or (self.mode == 'recommended' and item.recommendation != 'exclude')
         finally:
             _SYNCING = False
@@ -325,6 +472,7 @@ class RBB_OT_select(bpy.types.Operator):
 class RBB_OT_cancel(bpy.types.Operator):
     bl_idname = 'xivgate_rbb.cancel'
     bl_label = 'Отменить'
+    bl_description = 'Остановить текущее задание и закрыть рабочий Revit плагина; уже импортированная модель сохраняется'
     def execute(self, context):
         runtime.cancel()
         return {'FINISHED'}
@@ -346,6 +494,7 @@ class RBB_OT_show_worker(bpy.types.Operator):
 class RBB_OT_cache(bpy.types.Operator):
     bl_idname = 'xivgate_rbb.clear_cache'
     bl_label = 'Очистить завершённые задания'
+    bl_description = 'Показать объём завершённых заданий и подтвердить очистку; используемые текущей сценой файлы защищены'
 
     def invoke(self, context, event):
         try:
@@ -378,6 +527,7 @@ class RBB_OT_cache(bpy.types.Operator):
 class RBB_OT_preview(bpy.types.Operator):
     bl_idname = 'xivgate_rbb.preview_bounds'
     bl_label = 'Показать границы группы'
+    bl_description = 'Показать в сцене рамки выбранной строки или группы по каталогу Revit без загрузки геометрии'
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
@@ -420,6 +570,7 @@ class RBB_OT_preview(bpy.types.Operator):
 class RBB_OT_clear_preview(bpy.types.Operator):
     bl_idname = 'xivgate_rbb.clear_preview'
     bl_label = 'Убрать границы'
+    bl_description = 'Удалить только вспомогательные рамки предпросмотра AGR Revit Bridge; модель сохраняется'
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
@@ -432,6 +583,7 @@ class RBB_OT_clear_preview(bpy.types.Operator):
 class RBB_OT_check_update(bpy.types.Operator):
     bl_idname = 'xivgate_rbb.check_update'
     bl_label = 'Проверить обновления'
+    bl_description = 'Получить опубликованные версии с GitHub для стабильного канала и раннего доступа; установка отдельно'
     def execute(self, context):
         try:
             updater.start_check()
@@ -506,6 +658,7 @@ class RBB_PT_panel(bpy.types.Panel):
             selection.enabled = not props.busy and not runtime.MAINTENANCE
             selection.prop(props, 'list_mode', expand=True)
             selection.prop(props, 'search', text='', icon='VIEWZOOM')
+            selection.label(text='Галочки задают импорт; рекомендации можно менять.', icon='INFO')
             if props.list_mode == 'categories':
                 selection.template_list('RBB_UL_groups', 'categories', props, 'categories', props, 'category_index', rows=8)
             elif props.list_mode == 'worksets':
@@ -513,17 +666,54 @@ class RBB_PT_panel(bpy.types.Panel):
             elif props.list_mode == 'types':
                 selection.template_list('RBB_UL_groups', 'types', props, 'types', props, 'type_index', rows=8)
             else:
+                if props.scope_kind:
+                    scope = selection.row(align=True)
+                    scope.label(text='Группа: ' + props.scope_label)
+                    scope.operator('xivgate_rbb.clear_scope', text='', icon='X')
+                selection.prop(props, 'selection_filter', expand=True)
                 selection.template_list('RBB_UL_elements', '', props, 'elements', props, 'element_index', rows=8)
                 if 0 <= props.element_index < len(props.elements):
                     item = props.elements[props.element_index]
-                    selection.label(text='ID: ' + item.element_id + ' · ' + item.workset_name)
-                    selection.label(text=item.type_name or item.name)
-                    for line in textwrap.wrap(item.reason, 48)[:3]:
-                        selection.label(text=line)
+                    if matches(item, query=props.search, scope_kind=props.scope_kind,
+                               scope_id=props.scope_id, status=props.selection_filter):
+                        selection.label(text='В выборке: ' + ('да' if item.selected else 'нет'))
+                        recommendation = {'include': 'включить', 'exclude': 'исключить', 'review': 'проверить'}.get(item.recommendation, 'проверить')
+                        selection.label(text='Рекомендация: ' + recommendation)
+                        selection.label(text='ID: ' + item.element_id + ' · ' + item.workset_name)
+                        for line in textwrap.wrap(item.type_name or item.name, 48):
+                            selection.label(text=line)
+                        for line in textwrap.wrap(item.reason or 'Причина рекомендации не указана', 48):
+                            selection.label(text=line)
+                row = selection.row(align=True)
+                for mode, label in (('all', 'Выбрать показанные'), ('none', 'Снять показанные')):
+                    action = row.operator('xivgate_rbb.select', text=label)
+                    action.mode, action.scope = mode, 'visible'
+            group = active_group(props)
+            if group is not None:
+                summary = selection.box()
+                summary.label(text=group.name)
+                summary.label(text=f'Выбрано {group.selected_count} из {group.count}; исключено {group.count - group.selected_count}')
+                rows = [item for item in props.elements if getattr(item, group.group_kind + '_id') == group.group_id]
+                reasons = exclusion_summary(rows)
+                for reason, count in reasons[:4]:
+                    for line in textwrap.wrap(f'{count} — {reason}', 48):
+                        summary.label(text=line)
+                if len(reasons) > 4:
+                    summary.label(text=f'Ещё причин: {len(reasons) - 4}; откройте исключённые')
+                row = summary.row(align=True)
+                row.operator('xivgate_rbb.inspect_group', text='Показать исключённые', icon='VIEWZOOM')
+                row.operator('xivgate_rbb.inspect_group', text='Все в группе').excluded_only = False
+                row = summary.row(align=True)
+                for mode, label in (('all', 'Выбрать всю группу'), ('none', 'Снять всю группу')):
+                    action = row.operator('xivgate_rbb.select', text=label)
+                    action.mode, action.scope = mode, 'group'
+            selection.label(text='Выбор во всей модели:')
             row = selection.row(align=True)
             for mode, label in (('all', 'Все'), ('none', 'Ничего'), ('recommended', 'Рекомендуемые')):
-                row.operator('xivgate_rbb.select', text=label).mode = mode
-            selection.label(text=f'Выбрано: {props.selected_count} из {len(props.elements)}')
+                action = row.operator('xivgate_rbb.select', text=label)
+                action.mode, action.scope = mode, 'model'
+            selection.label(text=f'Отмечено для импорта: {props.selected_count} из {len(props.elements)}')
+            selection.label(text='Это выбор, не число полученных мешей.')
             selection.prop(props, 'preview_only_unselected')
             row = selection.row(align=True)
             row.operator('xivgate_rbb.preview_bounds', text='Границы', icon='SHADING_BBOX')
@@ -558,8 +748,11 @@ class RBB_PT_panel(bpy.types.Panel):
         if props.result_collection:
             layout.label(text=props.result_collection, icon='OUTLINER_COLLECTION')
             layout.label(text=f'{props.result_placements} размещений · {props.result_prototypes} прототипов')
+            rename = layout.row()
+            rename.enabled = not props.busy and not runtime.MAINTENANCE
+            rename.operator('xivgate_rbb.readable_names', icon='SORTALPHA')
         if props.warning_count:
-            layout.operator('xivgate_rbb.warnings', text=f'Отчёт: {props.warning_count} предупреждений', icon='INFO')
+            layout.operator('xivgate_rbb.warnings', text=f'Отчёт: {props.warning_count} записей', icon='INFO')
         update = layout.box()
         update.label(text='AGR Revit Bridge ' + updater.current_version())
         check = update.row(align=True)
@@ -589,6 +782,7 @@ def _load_pre(*args):
 
 
 CLASSES = (RBB_Element, RBB_Group, RBB_Warning, RBB_Settings, RBB_UL_groups, RBB_UL_elements, RBB_UL_warnings, RBB_OT_warnings,
+           RBB_OT_toggle_group, RBB_OT_inspect_group, RBB_OT_clear_scope, RBB_OT_copy_report_details, RBB_OT_readable_names,
            RBB_OT_setup, RBB_OT_scan, RBB_OT_import, RBB_OT_select, RBB_OT_cancel,
            RBB_OT_show_worker, RBB_OT_cache, RBB_OT_preview, RBB_OT_clear_preview, RBB_OT_check_update, RBB_OT_install_update, RBB_PT_panel)
 
