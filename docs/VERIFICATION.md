@@ -1,4 +1,4 @@
-# Verification of 0.1.0
+# Verification history
 
 ## Automated evidence
 
@@ -339,3 +339,40 @@ assembly version changed in C#.
 - Relative non-Revit external references are reported for inspection, without
   automatic reloading/rebasing. Their transfer is not guaranteed by this release.
   DLL trust prompts remain unchanged; no security settings were modified.
+
+## Stable 0.5.0 — 2026-10-31
+
+- Python: 172 tests completed, one privilege-dependent test skipped. Worker
+  protocol assertions: 125 on .NET 10 and 129 on .NET Framework 4.8. Loader
+  assertions: 67 and 64 respectively. All six workers built as 0.5.0.0.
+- Native Revit 2027: the owned prepared workshared fixture produced 2,962 catalog
+  elements and 1,566 geometry placements / 673 raw prototypes. The permanent
+  loader bootstrapped changed worker bytes without another trust prompt; the
+  worker exited normally and the original registration was restored byte for byte.
+- Actual family payload in Blender 4.2.14 and 5.2.3: 598 Mesh data blocks at the
+  default 0.1 mm, 593 at 5 mm, and 660 at zero tolerance with native identity still
+  enabled. All 35 tested chairs shared one Mesh at 5 mm; 0.1/0 mm restored two
+  variants. Maximum observed world-bounds difference remained within the selected
+  tolerance plus floating-point error. Raw manifest/binary bytes were unchanged.
+- Three available images decoded and packed; every imported Mesh retained a UV
+  layer. Material UI thumbnails were excluded from bitmap dependencies, while
+  genuine missing bitmap references remained UV-sensitive.
+- Controller regression used an explicit Revit I/O double and a real converter
+  subprocess: changing tolerance reused the validated raw snapshot even with
+  general export-cache reuse disabled. No new worker or export request occurred.
+- Both Blender hosts passed final ZIP installation, real 0.5.0 → 0.4.7 → 0.5.0
+  switching, old 0.4.7 validator acceptance, frozen loader immutability under a
+  Windows read lock, synthetic next-worker update and rollback, error reporting,
+  scene lifetime, idle shutdown, UI layout and font-measured wrapping checks.
+  Background font/layout checks are not a screenshot-based visual inspection.
+- Anonymous post-publication checks in both hosts downloaded and verified the
+  public release: 0.5.0 is latest stable, 0.4.7 remains Early Access. ZIP SHA256:
+  `b9156dbb10be7f844a317a4c44b6ab8c20201b1c9aa3985fc850162a016ecd64`.
+- Native Revit 2024–2026 execution remains untested; API builds and pure tests are
+  separate evidence. The third independent upgrade fixture stopped on door-insert
+  errors; its direct-opening comparison was interrupted. No source-specific
+  geometry repair or guarantee for arbitrary RVT/long-path inputs is claimed.
+- All Blender automation used isolated project-owned profiles. No original RVT,
+  production blend or user Preferences were overwritten. Owned Revit probes are
+  closed; test payloads/profiles/reports are retained in the approved project Temp
+  directory for reproducible diagnosis and are excluded from Git and release ZIPs.
