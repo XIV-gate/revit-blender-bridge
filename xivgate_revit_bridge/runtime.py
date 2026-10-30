@@ -138,6 +138,42 @@ def set_warnings(props, values):
     props.warning_count = len(props.warnings)
 
 
+def record_failure(scene, error, action=None):
+    """Keep failures in the scene report and an owned job, never just a popup."""
+    import traceback
+    from . import bl_info
+    from .core.jobs import atomic_write_json
+    props = scene.xivgate_revit_bridge
+    owns_state = STATE.scene == scene
+    phase = action or (STATE.action if owns_state else None) or 'operation'
+    details = ''.join(traceback.format_exception(type(error), error, error.__traceback__))
+    entry = f'Ошибка операции ({phase}): {error}\n{details}'
+    if owns_state and STATE.session is not None:
+        directory = STATE.session.directory
+        entry += '\nПапка задания: ' + str(directory)
+        path = directory / ('blender_error_' + uuid.uuid4().hex + '.json')
+        try:
+            atomic_write_json(path, dict(schema=1, action=phase, error=str(error), traceback=details,
+                request_id=STATE.request_id, addon_version='.'.join(map(str, bl_info['version'])),
+                blender_version=bpy.app.version_string))
+            entry += '\nДиагностика: ' + str(path)
+        except OSError as log_error:
+            entry += '\nНе удалось записать диагностику: ' + str(log_error)
+    set_warnings(props, raw_values(props.warnings) + [entry])
+    props.warning_index = len(props.warnings) - 1
+    props.status = 'ERROR'
+    props.message = f'{error} — подробности в отчёте.'
+    props.busy = False
+    if owns_state:
+        STATE.action = None
+        STATE.force_refresh = False
+        STATE.force_scan_done = False
+    for screen in bpy.data.screens:
+        for area in screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+
+
 def begin_scan(scene, *, auto_import=False):
     props = scene.xivgate_revit_bridge
     if MAINTENANCE or props.busy or STATE.action is not None:
@@ -460,7 +496,7 @@ def tick():
     except Exception as error:
         if STATE.scene is not None:
             try:
-                _message('ERROR', str(error))
+                record_failure(STATE.scene, error)
             except ReferenceError:
                 pass
         STATE.action = None
@@ -483,19 +519,8 @@ def show_worker():
     """Only called by an explicit user button; never by the development agent."""
     if os.name != 'nt' or not STATE.worker or not STATE.worker.pid or STATE.worker.poll() is not None:
         raise RuntimeError('Обработчик Revit не запущен')
-    import ctypes
-    from ctypes import wintypes
-    pid = STATE.worker.pid
-    user32 = ctypes.windll.user32
-    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-    def visit(hwnd, _):
-        owner = wintypes.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
-        if owner.value == pid:
-            user32.ShowWindow(hwnd, 5)
-        return True
-    callback = callback_type(visit)
-    user32.EnumWindows(callback, 0)
+    from .core.launcher import show_main_window
+    show_main_window(STATE.worker.pid)
 
 
 def cleanup(*_):

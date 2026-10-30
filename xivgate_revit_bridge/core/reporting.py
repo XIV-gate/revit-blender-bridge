@@ -14,7 +14,8 @@ def report_entries(values):
             # Accumulate outside JSON to avoid quadratic decoding for large models.
             geometry.setdefault('_raw', []).append(value)
         else:
-            entries.append(dict(message=value, severity='WARNING', count=1,
+            failed = value.startswith('Ошибка операции')
+            entries.append(dict(message=value.splitlines()[0] if failed else value, severity='ERROR' if failed else 'WARNING', count=1,
                                 raw_json=json.dumps([value], ensure_ascii=False)))
     if geometry is not None:
         raw = geometry.pop('_raw')

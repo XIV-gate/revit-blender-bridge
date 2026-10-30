@@ -245,3 +245,24 @@ assembly version changed in C#.
 - ZIP SHA256:1414f0e33b80ac0abd11dbcdb885a7478bb477f17b6a6a6888b47a0173b5a8d6.
 - Online Essentials stale metadata was diagnosed from installed Blender source;
   its native cache and user Preferences were not modified.
+
+## Early Access 0.4.4 — worker windows and retained operation errors
+
+- 113 ordinary Python tests successful (one Windows symlink privilege skip).
+  Window inventory/Win32 adapter doubles verified only the owned Revit main
+  window is revealed; hidden notification/runtime windows and foreign processes
+  are excluded. Visible owned active popups remain available. No real desktop
+  windows were manipulated by this test.
+- Isolated Blender5.2.3/4.2.14: immediate import validation error, asynchronous
+  converter failure and Revit error response all remain in the report; traceback,
+  request identity and versions are written inside the owned job. Attempting
+  another import during an active task leaves its state intact.
+- Both hosts: final ZIP install/enable, scan invoke and actual0.4.3->0.4.4->0.4.3
+  release switching passed without Preferences saves. Controller/converter and
+  early workflow regression passed on Blender5.2.3 with Revit I/O test doubles.
+- Six worker assemblies rebuilt0.4.4.0; C# logic unchanged. Existing net10
+  baseline CS1701 caveat unchanged. Revit2026.4 screenshot failure was not locally
+  reproduced: no log from that computer has been supplied. This release does
+  not claim its underlying export failure is resolved.
+- ZIP verified; no personal username paths. SHA256:
+  552c4999db688ee6054dc87367242decc58a57f1dbdef2ba08c198be63f135a6.

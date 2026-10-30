@@ -556,6 +556,7 @@ class RBB_OT_scan(bpy.types.Operator):
     bl_label = 'Получить список элементов'
     bl_description = 'Прочитать рабочую копию RVT в локальном Revit и показать каталог до импорта; предыдущий выбор сохраняется по ID'
     def invoke(self, context, event):
+        idle = not context.scene.xivgate_revit_bridge.busy and runtime.STATE.action is None
         try:
             self.cache = str(workflow.prepare_settings(context.scene))
             self.plan = runtime.setup_plan(context.scene.xivgate_revit_bridge)
@@ -563,6 +564,8 @@ class RBB_OT_scan(bpy.types.Operator):
                 return context.window_manager.invoke_props_dialog(self, width=680)
             return self.execute(context)
         except Exception as error:
+            if idle:
+                runtime.record_failure(context.scene, error, 'scan')
             self.report({'ERROR'}, str(error))
             return {'CANCELLED'}
 
@@ -574,6 +577,7 @@ class RBB_OT_scan(bpy.types.Operator):
         self.layout.label(text='Revit может один раз запросить доверие к надстройке.', icon='INFO')
 
     def execute(self, context):
+        idle = not context.scene.xivgate_revit_bridge.busy and runtime.STATE.action is None
         try:
             workflow.prepare_settings(context.scene)
             plan = runtime.setup_plan(context.scene.xivgate_revit_bridge)
@@ -582,6 +586,8 @@ class RBB_OT_scan(bpy.types.Operator):
             runtime.begin_scan(context.scene)
             return {'FINISHED'}
         except Exception as error:
+            if idle:
+                runtime.record_failure(context.scene, error, 'scan')
             self.report({'ERROR'}, str(error))
             return {'CANCELLED'}
 
@@ -598,10 +604,13 @@ class RBB_OT_import(bpy.types.Operator):
             return 'Заново прочитать RVT и перевыгрузить выбранный набор; это полное обновление из исходника, которое может занять время'
         return cls.bl_description
     def execute(self, context):
+        idle = not context.scene.xivgate_revit_bridge.busy and runtime.STATE.action is None
         try:
             runtime.begin_export(context.scene, force_refresh=self.force_refresh)
             return {'FINISHED'}
         except Exception as error:
+            if idle:
+                runtime.record_failure(context.scene, error, 'export')
             self.report({'ERROR'}, str(error))
             return {'CANCELLED'}
 

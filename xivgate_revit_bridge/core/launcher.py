@@ -5,6 +5,65 @@ import subprocess
 from .jobs import contained_path
 
 
+def choose_main_window(windows, pid):
+    """Fail closed: runtime notification windows are never a Revit main window."""
+    candidates = []
+    for item in windows:
+        title = item['title'].strip().casefold()
+        class_name = item['class_name'].casefold()
+        if (item['pid'] != pid or item['tool'] or item['area'] <= 0
+                or not (title == 'revit' or title.startswith('autodesk revit'))
+                or any(token in class_name for token in ('notification', 'broadcast', 'notify', 'gdip'))):
+            continue
+        candidates.append(item)
+    return max(candidates, key=lambda item: (item['title'].casefold().startswith('autodesk revit'), item['area']))['hwnd'] if candidates else None
+
+
+def show_main_window(pid):
+    """Only an explicit UI command may reveal the owned main window/dialog."""
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.WinDLL('user32', use_last_error=True)
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.GetLastActivePopup.argtypes = [wintypes.HWND]
+    user32.GetLastActivePopup.restype = wintypes.HWND
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsIconic.argtypes = [wintypes.HWND]
+    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    windows = []
+    def visit(hwnd, _):
+        owner_pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner_pid))
+        if owner_pid.value == pid:
+            title, name = ctypes.create_unicode_buffer(2048), ctypes.create_unicode_buffer(256)
+            bounds = wintypes.RECT()
+            user32.GetWindowTextW(hwnd, title, len(title))
+            user32.GetClassNameW(hwnd, name, len(name))
+            user32.GetWindowRect(hwnd, ctypes.byref(bounds))
+            windows.append(dict(hwnd=hwnd, pid=pid, title=title.value, class_name=name.value,
+                                area=max(0, bounds.right-bounds.left)*max(0, bounds.bottom-bounds.top),
+                                tool=bool(user32.GetWindowLongW(hwnd, -20) & 0x80)))
+        return True
+    callback = callback_type(visit)
+    user32.EnumWindows(callback, 0)
+    main = choose_main_window(windows, pid)
+    if main is None:
+        raise RuntimeError('Главное окно Revit пока не найдено. Дождитесь запуска; служебные окна не раскрываются.')
+    user32.ShowWindow(main, 9 if user32.IsIconic(main) else 5)
+    popup = user32.GetLastActivePopup(main)
+    if popup and popup != main and user32.IsWindowVisible(popup):
+        owner_pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(popup, ctypes.byref(owner_pid))
+        if owner_pid.value == pid:
+            user32.ShowWindow(popup, 9 if user32.IsIconic(popup) else 5)
+
+
 class WorkerProcess:
     def __init__(self):
         self._process = None
