@@ -45,7 +45,8 @@ def catalog_from_props(props):
 
 def _within_job(path):
     value = Path(path).resolve()
-    if not STATE.session or not value.is_relative_to(STATE.session.directory):
+    root = STATE.file_root or (STATE.session.directory if STATE.session else None)
+    if root is None or not value.is_relative_to(root):
         raise ValueError('Ответ обработчика указывает за пределы задания')
     return value
 
@@ -69,6 +70,11 @@ class Runtime:
         self.pending_selected_ids = None
         self.scanned_source_hash = ''
         self.force_refresh = False
+        self.file_root = None
+        self.cache_index = None
+        self.cache_signature = ''
+        self.delta_ids = None
+        self.force_scan_done = False
 
     @property
     def props(self):
@@ -77,12 +83,23 @@ class Runtime:
     def stop(self):
         if self.converter and self.converter.poll() is None:
             self.converter.terminate()
+            try:
+                self.converter.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
         if self.worker:
             self.worker.terminate()
+        if (self.session and (self.worker is None or self.worker.poll() is not None)
+                and (self.converter is None or self.converter.poll() is not None)):
+            try:
+                self.session.finish()
+            except (OSError, ValueError):
+                pass
         self.converter = None
         self.worker = None
         self.session = None
         self.action = None
+        self.file_root = None
 
 
 STATE = Runtime()
@@ -121,6 +138,8 @@ def begin_scan(scene, *, auto_import=False):
         raise RuntimeError('Дождитесь завершения текущего задания')
     if os.name != 'nt':
         raise RuntimeError('Локальный Revit требует Windows')
+    from .workflow import prepare_settings
+    cache = prepare_settings(scene)
     exe = Path(bpy.path.abspath(props.revit_exe))
     source = Path(bpy.path.abspath(props.source_rvt)).resolve()
     info = inspect_revit(exe)
@@ -128,8 +147,6 @@ def begin_scan(scene, *, auto_import=False):
         raise ValueError('Укажите существующий файл RVT')
     if not worker_path(props).is_file():
         raise FileNotFoundError('В комплекте отсутствует обработчик Revit ' + info['key'])
-    if not props.cache_directory:
-        raise ValueError('Укажите рабочую папку для копии RVT и кэша')
     plan = setup_plan(props)
     if not Path(plan['path']).is_file():
         raise RuntimeError('Сначала нажмите «Подключить Revit» в этой панели')
@@ -142,16 +159,17 @@ def begin_scan(scene, *, auto_import=False):
         props.import_id = ''
         props.origin_valid = False
     STATE.scene = scene
+    STATE.file_root = None
     STATE.scanned_source_hash = source_sha256(source)
     STATE.previous_selection = previous
     STATE.auto_import = auto_import
     props.elements.clear()
     props.categories.clear()
     props.worksets.clear()
+    props.types.clear()
     props.catalog_source = ''
     if STATE.worker is None or STATE.worker.poll() is not None:
-        root = Path(bpy.path.abspath(props.cache_directory))
-        STATE.session = JobSession.create(root)
+        STATE.session = JobSession.create(cache)
         STATE.worker = WorkerProcess()
     request = STATE.session.request('scan', source_rvt=str(source), options={'load_links': props.load_links})
     STATE.request_id = request['request_id']
@@ -183,11 +201,16 @@ def _load_catalog(path):
         row.category_name = item.get('category_name', '')
         row.workset_id = str(item.get('workset_id', ''))
         row.workset_name = item.get('workset_name', '')
+        row.type_id = row.category_id + ':' + str(item.get('type_id', '-1'))
+        row.family_name = item.get('family_name', '')
+        row.type_name = row.category_name + ' · ' + ' / '.join(value for value in (row.family_name, item.get('type_name') or row.name) if value)
+        minimum, maximum = item.get('bbox_min'), item.get('bbox_max')
+        row.bbox_json = json.dumps((minimum, maximum)) if minimum is not None and maximum is not None else ''
         row.recommendation = item.get('recommendation', 'review')
         row.reason = item.get('reason', '')
         row.selected = choices[row.element_id]
-    for kind, field in (('category', 'categories'), ('workset', 'worksets')):
-        unique = {str(item.get(kind + '_id', '')): item.get(kind + '_name', '') for item in catalog.get('elements', [])}
+    for kind, field in (('category', 'categories'), ('workset', 'worksets'), ('type', 'types')):
+        unique = {getattr(item, kind + '_id'): getattr(item, kind + '_name') for item in props.elements}
         collection = getattr(props, field)
         for identifier, name in sorted(unique.items(), key=lambda pair: pair[1].casefold()):
             row = collection.add()
@@ -216,42 +239,72 @@ def begin_export(scene, *, force_refresh=False):
     if not ids:
         raise ValueError('Не выбран ни один элемент')
     STATE.force_refresh = force_refresh
+    if force_refresh and not STATE.force_scan_done:
+        STATE.force_scan_done = True
+        begin_scan(scene, auto_import=True)
+        return
+    if not force_refresh:
+        STATE.force_scan_done = False
+    STATE.delta_ids = None
+    STATE.file_root = None
     source_hash = source_sha256(source)
     STATE.pending_context = json.dumps(dict(format=2, source=str(source), sha256=source_hash,
         exe=os.path.normcase(str(Path(bpy.path.abspath(props.revit_exe)).resolve())),
         detail=props.detail_level, instances=props.preserve_instances, materials=props.import_materials,
         textures=props.import_textures, pack=props.pack_images, centered=props.center_model), sort_keys=True)
     STATE.pending_selected_ids = ids
-    if not force_refresh and props.import_id and props.import_context_json == STATE.pending_context:
-        from .blender_import import apply_selection
+    STATE.pending_options = {'preserve_instances': props.preserve_instances, 'materials': props.import_materials,
+                            'textures': props.import_textures, 'pack_images': props.pack_images,
+                            'center_model': props.center_model}
+    same_context = props.import_id and props.import_context_json == STATE.pending_context
+    if not force_refresh and same_context:
+        from .blender_import import apply_selection, OWNER, ROOT_FLAG, AVAILABLE_IDS, SELECTION
         with bpy.context.temp_override(scene=scene, view_layer=scene.view_layers[0]):
-            result = apply_selection(props.import_id, ids)
+            result = apply_selection(props.import_id, ids, stash_deselected=True)
         if result is not None:
             STATE.scene = scene
             props.result_collection = result['collection']
             props.result_placements, props.result_prototypes = result['placements'], result['prototypes']
-            _message('DONE', f"Выбор применён без Revit: {result['placements']} размещений, исключено {result['removed']}.", progress=1)
+            _message('DONE', f"Выбор применён без Revit: {result['placements']} размещений; скрыто {result['removed']}, восстановлено {result.get('restored', 0)}.", progress=1)
+            return
+        roots = [root for root in scene.collection.children_recursive if root.get(OWNER) == props.import_id and root.get(ROOT_FLAG)]
+        if len(roots) == 1:
+            try:
+                available = set(json.loads(roots[0].get(AVAILABLE_IDS, roots[0].get(SELECTION, '[]'))))
+                added = ids - available
+                if added and props.origin_valid:
+                    STATE.delta_ids = added
+            except (ValueError, TypeError):
+                pass  # Unknown metadata requires a complete source refresh.
+    from .workflow import cache_root
+    from .core.export_cache import export_signature, lookup_export
+    from . import bl_info
+    host = inspect_revit(bpy.path.abspath(props.revit_exe))
+    key = '|'.join((host['key'], host.get('version', ''), os.path.normcase(str(Path(bpy.path.abspath(props.revit_exe)).resolve()))))
+    STATE.cache_index = cache_root(props) / 'last_export.json'
+    STATE.cache_signature = export_signature(source, ids, props.detail_level, key, '.'.join(map(str, bl_info['version'])))
+    if not force_refresh and STATE.delta_ids is None and props.reuse_export_cache:
+        manifest = lookup_export(STATE.cache_index, STATE.cache_signature)
+        if manifest is not None:
+            STATE.scene = scene
+            STATE.file_root = manifest.parent
+            _start_conversion(manifest)
+            _timer_start()
             return
     if (STATE.session is None or STATE.worker is None or STATE.worker.poll() is not None
             or STATE.scene != scene or STATE.session.source_path != props.catalog_source
             or STATE.worker_exe != os.path.normcase(str(Path(bpy.path.abspath(props.revit_exe)).resolve()))
+            or STATE.session.directory.parent != cache_root(props)
             or STATE.scanned_source_hash != source_hash):
         begin_scan(scene, auto_import=True)
         return
-    ids = selected_ids(props)
-    if not ids:
-        raise ValueError('Не выбран ни один элемент')
-    if Path(bpy.path.abspath(props.source_rvt)).resolve() != Path(props.catalog_source):
-        raise ValueError('Файл RVT изменён в панели; сначала получите новый список')
     STATE.scene = scene
-    STATE.pending_options = {'preserve_instances': props.preserve_instances, 'materials': props.import_materials,
-                             'textures': props.import_textures, 'pack_images': props.pack_images,
-                             'center_model': props.center_model}
-    request = STATE.session.request('export', selection_ids=ids, options={'detail_level': props.detail_level})
+    export_ids = STATE.delta_ids if STATE.delta_ids is not None else ids
+    request = STATE.session.request('export', selection_ids=export_ids, options={'detail_level': props.detail_level})
     STATE.request_id = request['request_id']
     STATE.action = 'export'
     STATE.started = time.monotonic()
-    _message('EXPORTING', f'Выгрузка выбранных элементов: {len(ids)}…', busy=True, progress=0)
+    _message('EXPORTING', ('Дозагрузка новых элементов: ' if STATE.delta_ids is not None else 'Выгрузка выбранных элементов: ') + str(len(export_ids)), busy=True, progress=0)
     _timer_start()
 
 
@@ -259,6 +312,9 @@ def _start_conversion(manifest):
     manifest = _within_job(manifest)
     target = manifest.with_name('scene.usdc')
     response = manifest.with_name('conversion.json')
+    if STATE.file_root is not None:
+        target = manifest.with_name('scene-' + uuid.uuid4().hex + '.usdc')
+        response = target.with_suffix('.conversion.json')
     python_exe = Path(sys.prefix) / 'bin' / ('python.exe' if os.name == 'nt' else 'python3')
     if not python_exe.is_file():
         raise FileNotFoundError('Не найден встроенный Python Blender: ' + str(python_exe))
@@ -277,7 +333,7 @@ def _start_conversion(manifest):
     env['PYTHONPATH'] = str(Path(__file__).resolve().parent.parent)
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     env['PYTHONNOUSERSITE'] = '1'
-    temporary = STATE.session.directory / 'tmp'
+    temporary = (STATE.file_root or STATE.session.directory) / 'tmp'
     temporary.mkdir(exist_ok=True)
     env['TEMP'] = env['TMP'] = str(temporary)
     kwargs = {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
@@ -295,9 +351,18 @@ def _apply_import():
     props = STATE.props
     _message('IMPORTING', 'Создание проверенного результата Blender…', busy=True, progress=0.9)
     with bpy.context.temp_override(scene=STATE.scene, view_layer=STATE.scene.view_layers[0]):
-        result = import_result(STATE.converted_usd, import_id=props.import_id or None,
-            preserve_instances=STATE.pending_options['preserve_instances'], pack_images=STATE.pending_options['pack_images'],
-            source_path=props.catalog_source, selected_element_ids=STATE.pending_selected_ids)
+        kwargs = dict(preserve_instances=STATE.pending_options['preserve_instances'],
+                      pack_images=STATE.pending_options['pack_images'], source_path=props.catalog_source)
+        if STATE.delta_ids is not None:
+            from .blender_import import merge_result
+            result = merge_result(STATE.converted_usd, import_id=props.import_id,
+                selected_element_ids=STATE.delta_ids, final_selection_ids=STATE.pending_selected_ids, **kwargs)
+            if result is None:
+                _fallback_full('Составные элементы требуют полной выгрузки; предыдущая модель сохранена.')
+                return
+        else:
+            result = import_result(STATE.converted_usd, import_id=props.import_id or None,
+                                  selected_element_ids=STATE.pending_selected_ids, **kwargs)
     props.import_id = result['import_id']
     props.import_source = props.catalog_source
     props.import_context_json = STATE.pending_context
@@ -311,7 +376,17 @@ def _apply_import():
     STATE.action = None
     STATE.converter = None
     STATE.force_refresh = False
+    STATE.force_scan_done = False
     _message('DONE', f"Импортировано: {result['placements']} размещений, {result['prototypes']} прототипов.", progress=1)
+
+
+def _fallback_full(message):
+    STATE.action = None
+    STATE.converter = None
+    STATE.delta_ids = None
+    STATE.force_scan_done = False
+    _message('EXPORTING', message, busy=False, progress=0)
+    begin_export(STATE.scene, force_refresh=True)
 
 
 def tick():
@@ -327,17 +402,27 @@ def tick():
                 raise RuntimeError((response or {}).get('error', 'Не удалось подготовить геометрию; см. conversion.log'))
             _warnings([item.message for item in STATE.props.warnings] + ['Не найдена текстура: ' + path for path in response.get('missing_textures', [])])
             _apply_import()
-            return None
+            return .25 if STATE.action else None
         response = STATE.session.read_response(STATE.request_id)
         if response is not None:
             _warnings(response.get('warnings', []))
             if not response['success']:
-                raise RuntimeError(str(response.get('error', 'Revit не завершил задание')))
+                error = str(response.get('error', 'Revit не завершил задание'))
+                if STATE.action == 'export' and STATE.delta_ids is not None and error.startswith('Выбранные элементы не дали геометрии'):
+                    _fallback_full('Новые элементы не дали сетки; проверка полного набора с сохранением текущей модели.')
+                    return .25
+                raise RuntimeError(error)
             if STATE.action == 'scan':
                 STATE.action = None
                 _load_catalog(response['catalog_path'])
                 return 0.25 if STATE.action else None
             if STATE.action == 'export':
+                if STATE.delta_ids is None:
+                    from .core.export_cache import record_export, CacheError
+                    try:
+                        record_export(STATE.cache_index, STATE.cache_signature, _within_job(response['manifest_path']))
+                    except (CacheError, OSError) as error:
+                        _warnings([item.message for item in STATE.props.warnings] + ['Кэш не сохранён: ' + str(error)])
                 _start_conversion(response['manifest_path'])
                 return 0.25
         status = STATE.session.read_status()
@@ -359,6 +444,8 @@ def tick():
             except ReferenceError:
                 pass
         STATE.action = None
+        STATE.force_refresh = False
+        STATE.force_scan_done = False
         return None
 
 
@@ -366,6 +453,8 @@ def cancel():
     if STATE.session and STATE.request_id:
         STATE.session.cancel(STATE.request_id)
     STATE.stop()
+    STATE.force_refresh = False
+    STATE.force_scan_done = False
     if STATE.scene is not None:
         _message('IDLE', 'Задание отменено. Предыдущий результат сохранён.')
 

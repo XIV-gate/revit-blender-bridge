@@ -24,6 +24,8 @@ class TestWorker:
     pid = None
     started_executables = []
     export_requests = []
+    composite_delta = False
+    empty_delta = False
 
     def start(self, exe, directory, token, extra_env=None):
         self.started_executables.append(str(exe))
@@ -42,13 +44,24 @@ class TestWorker:
             if request['action'] == 'scan':
                 elements = [dict(id=key, unique_id='unique-' + key, name='Fixture ' + key,
                     category_id='windows' if key != '13' else 'walls', category_name='Окна' if key != '13' else 'Стены',
+                    type_id='window' if key != '13' else 'wall', type_name='Window type' if key != '13' else 'Wall type',
+                    family_name='Fixture family', bbox_min=[100, 200, 0], bbox_max=[102, 200.2, 3],
                     workset_id='facade', workset_name='Фасады', recommendation='include') for key in ('11', '12', '13')]
                 catalog = output / 'catalog.json'
                 atomic_write_json(catalog, dict(schema=1, elements=elements, warnings=[]))
                 response['catalog_path'] = str(catalog)
             elif request['action'] == 'export':
                 self.export_requests.append(tuple(request['selection']['include_ids']))
-                manifest = write_fixture(output, set(request['selection']['include_ids']))
+                fixture_ids = set(request['selection']['include_ids'])
+                if self.empty_delta:
+                    fixture_ids.discard('13')
+                manifest = write_fixture(output, fixture_ids)
+                if self.composite_delta and request['selection']['include_ids'] == ['13']:
+                    data = read_json(manifest)
+                    data['occurrences'][0]['source_element_ids'] = ['11', '13']
+                    atomic_write_json(manifest, data)
+                if self.empty_delta and request['selection']['include_ids'] == ['13']:
+                    response.update(success=False, error='Выбранные элементы не дали геометрии. Проверьте состав выбора.')
                 response['manifest_path'] = str(manifest)
             atomic_write_json(self.directory / 'response.json', response)
         return None

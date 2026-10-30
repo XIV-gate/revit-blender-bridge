@@ -8,7 +8,7 @@ from bpy.app.handlers import persistent
 from bpy.props import (BoolProperty, CollectionProperty, EnumProperty, FloatProperty,
                        IntProperty, PointerProperty, StringProperty)
 
-from . import runtime, updater
+from . import runtime, updater, workflow
 from .core.catalog import initial_selection
 
 
@@ -49,13 +49,13 @@ def sync_groups(props):
     previous = _SYNCING
     _SYNCING = True
     try:
-        counts = {'category': {}, 'workset': {}}
+        counts = {'category': {}, 'workset': {}, 'type': {}}
         for item in props.elements:
             for kind in counts:
                 key = getattr(item, kind + '_id')
                 total, selected = counts[kind].get(key, (0, 0))
                 counts[kind][key] = (total + 1, selected + int(item.selected))
-        for kind, rows in (('category', props.categories), ('workset', props.worksets)):
+        for kind, rows in (('category', props.categories), ('workset', props.worksets), ('type', props.types)):
             for item in rows:
                 item.count, item.selected_count = counts[kind].get(item.group_id, (0, 0))
                 item.selected = item.count > 0 and item.count == item.selected_count
@@ -92,6 +92,10 @@ class RBB_Element(bpy.types.PropertyGroup):
     category_name: StringProperty()
     workset_id: StringProperty()
     workset_name: StringProperty()
+    type_id: StringProperty()
+    type_name: StringProperty()
+    family_name: StringProperty()
+    bbox_json: StringProperty()
     recommendation: StringProperty(default='review')
     reason: StringProperty()
     selected: BoolProperty(default=True, update=element_changed)
@@ -123,8 +127,10 @@ class RBB_Settings(bpy.types.PropertyGroup):
     source_rvt: StringProperty(name='Файл RVT', subtype='FILE_PATH')
     revit_exe: StringProperty(name='Revit.exe', subtype='FILE_PATH', default=_default_revit())
     cache_directory: StringProperty(name='Рабочая папка', subtype='DIR_PATH', description='Папка для рабочей копии RVT, геометрии и журналов')
+    reuse_export_cache: BoolProperty(name='Использовать проверенный кэш выгрузки', default=True)
+    catalog_worker_key: StringProperty()
     addin_folder: StringProperty(name='Каталог подключения Revit', subtype='DIR_PATH', description='Обычно определяется автоматически; нужен только при нестандартной установке')
-    preserve_instances: BoolProperty(name='Сохранять инстансы', default=True)
+    preserve_instances: BoolProperty(name='Сохранять инстансы', default=True, description='Редактируемые Mesh-объекты с общими данными, как Alt+D')
     import_materials: BoolProperty(name='Переносить материалы', default=True)
     import_textures: BoolProperty(name='Переносить доступные текстуры', default=True)
     pack_images: BoolProperty(name='Упаковать текстуры в .blend', default=True)
@@ -132,14 +138,17 @@ class RBB_Settings(bpy.types.PropertyGroup):
     load_links: BoolProperty(default=False)
     detail_level: EnumProperty(name='Детализация', items=[('coarse', 'Низкая', ''), ('medium', 'Средняя', ''), ('fine', 'Высокая', '')], default='medium')
     show_advanced: BoolProperty(name='Настройки', default=False)
-    list_mode: EnumProperty(name='Показать', items=[('categories', 'Категории', ''), ('worksets', 'Рабочие наборы', ''), ('elements', 'Объекты', '')])
+    list_mode: EnumProperty(name='Показать', items=[('categories', 'Категории', ''), ('worksets', 'Рабочие наборы', ''), ('types', 'Типы', ''), ('elements', 'Объекты', '')])
     search: StringProperty(name='Поиск', options={'TEXTEDIT_UPDATE'})
     elements: CollectionProperty(type=RBB_Element)
     categories: CollectionProperty(type=RBB_Group)
     worksets: CollectionProperty(type=RBB_Group)
+    types: CollectionProperty(type=RBB_Group)
     element_index: IntProperty()
     category_index: IntProperty()
     workset_index: IntProperty()
+    type_index: IntProperty()
+    preview_only_unselected: BoolProperty(name='Границы только исключённых', default=True)
     selected_count: IntProperty()
     busy: BoolProperty(default=False, options={'SKIP_SAVE'})
     status: StringProperty(default='IDLE', options={'SKIP_SAVE'})
@@ -210,7 +219,7 @@ class RBB_UL_elements(bpy.types.UIList):
         query = context.scene.xivgate_revit_bridge.search.casefold().strip()
         flags = []
         for item in getattr(data, propname):
-            text = ' '.join((item.name, item.category_name, item.workset_name, item.element_id)).casefold()
+            text = ' '.join((item.name, item.category_name, item.workset_name, item.type_name, item.family_name, item.element_id)).casefold()
             flags.append(self.bitflag_filter_item if not query or query in text else 0)
         return flags, []
 
@@ -249,8 +258,32 @@ class RBB_OT_setup(bpy.types.Operator):
 class RBB_OT_scan(bpy.types.Operator):
     bl_idname = 'xivgate_rbb.scan'
     bl_label = 'Получить список элементов'
+    def invoke(self, context, event):
+        try:
+            self.cache = str(workflow.prepare_settings(context.scene))
+            self.plan = runtime.setup_plan(context.scene.xivgate_revit_bridge)
+            if not runtime.manifest_matches(self.plan) or not Path(self.cache).is_dir():
+                return context.window_manager.invoke_props_dialog(self, width=680)
+            return self.execute(context)
+        except Exception as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+
+    def draw(self, context):
+        self.layout.label(text='Подключение локального обработчика Revit:')
+        for line in textwrap.wrap(self.plan['path'], 90):
+            self.layout.label(text=line)
+        self.layout.label(text='Копия RVT и промежуточные данные:')
+        for line in textwrap.wrap(self.cache, 90):
+            self.layout.label(text=line)
+        self.layout.label(text='Revit может один раз запросить доверие к надстройке.', icon='INFO')
+
     def execute(self, context):
         try:
+            workflow.prepare_settings(context.scene)
+            plan = runtime.setup_plan(context.scene.xivgate_revit_bridge)
+            if not runtime.manifest_matches(plan):
+                updater.connect_revit(plan)
             runtime.begin_scan(context.scene)
             return {'FINISHED'}
         except Exception as error:
@@ -308,6 +341,92 @@ class RBB_OT_show_worker(bpy.types.Operator):
         except Exception as error:
             self.report({'ERROR'}, str(error))
             return {'CANCELLED'}
+
+
+class RBB_OT_cache(bpy.types.Operator):
+    bl_idname = 'xivgate_rbb.clear_cache'
+    bl_label = 'Очистить завершённые задания'
+
+    def invoke(self, context, event):
+        try:
+            self.info = workflow.cache_info(context.scene.xivgate_revit_bridge)
+            return context.window_manager.invoke_props_dialog(self, width=600)
+        except Exception as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+
+
+    def draw(self, context):
+        self.layout.label(text=f"Завершённых заданий: {self.info['eligible_jobs']}; {self.info['eligible_bytes'] / 1024**2:.1f} МБ")
+        for line in textwrap.wrap(self.info['root'], 85):
+            self.layout.label(text=line)
+        self.layout.label(text='Для следующего импорта может потребоваться новая выгрузка.')
+        self.layout.label(text='Активные и неизвестные каталоги сохраняются.')
+        self.layout.label(text='Файлы, используемые текущими сценами, тоже сохраняются.')
+
+    def execute(self, context):
+        try:
+            result = workflow.clean_cache(context.scene.xivgate_revit_bridge)
+            self.report({'WARNING'} if result['errors'] else {'INFO'},
+                        f"Удалено заданий: {result['deleted_jobs']}; ошибок: {len(result['errors'])}")
+            return {'FINISHED'}
+        except Exception as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+
+
+class RBB_OT_preview(bpy.types.Operator):
+    bl_idname = 'xivgate_rbb.preview_bounds'
+    bl_label = 'Показать границы группы'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        import json
+        from .spatial_preview import preview_bounds
+        props = context.scene.xivgate_revit_bridge
+        try:
+            if not props.origin_valid and props.center_model:
+                raise ValueError('Сначала импортируйте основной набор, чтобы совместить предпросмотр с моделью')
+            if props.list_mode == 'elements':
+                candidates = [props.elements[props.element_index]] if 0 <= props.element_index < len(props.elements) else []
+            else:
+                group, index, kind = {'categories': (props.categories, props.category_index, 'category'),
+                    'worksets': (props.worksets, props.workset_index, 'workset'),
+                    'types': (props.types, props.type_index, 'type')}[props.list_mode]
+                key = group[index].group_id if 0 <= index < len(group) else None
+                candidates = [row for row in props.elements if getattr(row, kind + '_id') == key]
+            rows = []
+            for row in candidates:
+                if row.bbox_json and (not props.preview_only_unselected or not row.selected):
+                    minimum, maximum = json.loads(row.bbox_json)
+                    rows.append(dict(id=row.element_id, name=row.name, bbox_min=minimum, bbox_max=maximum))
+            if not rows:
+                raise ValueError('Нет границ для предпросмотра. Получите новый список или отключите фильтр исключённых.')
+            offset = json.loads(props.source_offset_json) if props.origin_valid and props.origin_centered else (0, 0, 0)
+            result = preview_bounds(context.scene, rows, offset)
+            # Follow a deliberately moved imported root, without changing the user's view.
+            if result['object_name'] and props.result_collection in bpy.data.collections:
+                root = next((obj for obj in bpy.data.collections[props.result_collection].objects
+                             if obj.type == 'EMPTY' and 'revit:source_offset_metres' in obj), None)
+                if root is not None:
+                    bpy.data.objects[result['object_name']].matrix_world = root.matrix_world
+            self.report({'INFO'}, f"Показано границ: {result['shown']} из {result['total']}; геометрия не загружалась")
+            return {'FINISHED'}
+        except Exception as error:
+            self.report({'ERROR'}, str(error))
+            return {'CANCELLED'}
+
+
+class RBB_OT_clear_preview(bpy.types.Operator):
+    bl_idname = 'xivgate_rbb.clear_preview'
+    bl_label = 'Убрать границы'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        from .spatial_preview import clear_preview
+        clear_preview(context.scene)
+        return {'FINISHED'}
+
 
 
 class RBB_OT_check_update(bpy.types.Operator):
@@ -370,11 +489,9 @@ class RBB_PT_panel(bpy.types.Panel):
         files = layout.column()
         files.enabled = not props.busy and not runtime.MAINTENANCE
         files.prop(props, 'source_rvt')
-        files.prop(props, 'revit_exe')
-        files.prop(props, 'cache_directory')
         row = files.row(align=True)
-        row.operator('xivgate_rbb.setup_revit', text='Подключить Revit', icon='PLUGIN')
         row.operator('xivgate_rbb.scan', text='Получить список', icon='VIEWZOOM')
+        layout.label(text='Ранний доступ 0.3.1', icon='EXPERIMENTAL')
         box = layout.box()
         icon = 'ERROR' if props.status == 'ERROR' else 'QUESTION' if props.status == 'REQUIRES_ACTION' else 'INFO'
         for index, line in enumerate(textwrap.wrap(props.message, width=48)[:8]):
@@ -393,17 +510,24 @@ class RBB_PT_panel(bpy.types.Panel):
                 selection.template_list('RBB_UL_groups', 'categories', props, 'categories', props, 'category_index', rows=8)
             elif props.list_mode == 'worksets':
                 selection.template_list('RBB_UL_groups', 'worksets', props, 'worksets', props, 'workset_index', rows=8)
+            elif props.list_mode == 'types':
+                selection.template_list('RBB_UL_groups', 'types', props, 'types', props, 'type_index', rows=8)
             else:
                 selection.template_list('RBB_UL_elements', '', props, 'elements', props, 'element_index', rows=8)
                 if 0 <= props.element_index < len(props.elements):
                     item = props.elements[props.element_index]
                     selection.label(text='ID: ' + item.element_id + ' · ' + item.workset_name)
+                    selection.label(text=item.type_name or item.name)
                     for line in textwrap.wrap(item.reason, 48)[:3]:
                         selection.label(text=line)
             row = selection.row(align=True)
             for mode, label in (('all', 'Все'), ('none', 'Ничего'), ('recommended', 'Рекомендуемые')):
                 row.operator('xivgate_rbb.select', text=label).mode = mode
             selection.label(text=f'Выбрано: {props.selected_count} из {len(props.elements)}')
+            selection.prop(props, 'preview_only_unselected')
+            row = selection.row(align=True)
+            row.operator('xivgate_rbb.preview_bounds', text='Границы', icon='SHADING_BBOX')
+            row.operator('xivgate_rbb.clear_preview', text='Убрать', icon='X')
         options = layout.column()
         options.enabled = not props.busy and not runtime.MAINTENANCE
         options.prop(props, 'preserve_instances')
@@ -411,6 +535,17 @@ class RBB_PT_panel(bpy.types.Panel):
         options.prop(props, 'import_textures')
         options.prop(props, 'show_advanced', icon='TRIA_DOWN' if props.show_advanced else 'TRIA_RIGHT', emboss=False)
         if props.show_advanced:
+            options.prop(props, 'revit_exe')
+            options.prop(props, 'cache_directory', text='Кэш (пусто — автоматически)')
+            options.prop(props, 'reuse_export_cache')
+            options.operator('xivgate_rbb.setup_revit', icon='PLUGIN')
+            try:
+                options.label(text='Кэш: ' + str(workflow.cache_root(props)))
+            except ValueError:
+                options.label(text='Сохраните .blend или укажите папку кэша', icon='INFO')
+            options.operator('xivgate_rbb.clear_cache', icon='TRASH')
+            if runtime.STATE.worker is not None:
+                options.operator('xivgate_rbb.cancel', text='Закрыть рабочий Revit', icon='CANCEL')
             options.prop(props, 'pack_images')
             options.prop(props, 'center_model')
             options.prop(props, 'detail_level')
@@ -455,7 +590,7 @@ def _load_pre(*args):
 
 CLASSES = (RBB_Element, RBB_Group, RBB_Warning, RBB_Settings, RBB_UL_groups, RBB_UL_elements, RBB_UL_warnings, RBB_OT_warnings,
            RBB_OT_setup, RBB_OT_scan, RBB_OT_import, RBB_OT_select, RBB_OT_cancel,
-           RBB_OT_show_worker, RBB_OT_check_update, RBB_OT_install_update, RBB_PT_panel)
+           RBB_OT_show_worker, RBB_OT_cache, RBB_OT_preview, RBB_OT_clear_preview, RBB_OT_check_update, RBB_OT_install_update, RBB_PT_panel)
 
 
 def register():

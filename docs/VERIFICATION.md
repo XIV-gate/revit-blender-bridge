@@ -120,3 +120,27 @@ upgrade/explicit downgrade/failed-code rollback. All processes use isolated prof
 Real user export12108 placements/5203prototypes: import as direct Mesh objects45.917s;
 remove exact72mass/massfloor placements0.419s, retained identities/names unchanged.
 SourceUSD read-only, no user scene or Preferences written.
+
+
+## 0.3.1 Early Access candidate
+
+89puretests (one Windows symlink-privilege skip). All6workerDLLs compiled with
+assemblyversion0.3.1.0; onlyassemblymetadata differs from0.3.0 C# behavior.
+RealBlender4.2.14 and5.2.3 tests cover staged delta merge and rollback, signature
+mesh/material reuse, moved roots, parent/source boundaries, shared scenes, local
+stash/restore, object names, EditMode shared mesh updates and bounds-preview safety.
+End-to-endcontroller fixtures use real bundled-Python conversion and test-only
+RevitI/O: onlynewID12 exported, oldwindow mesh/pointer retained; toggleoff/on uses
+noexport; compositeoverlap andemptydelta safelytransitiontofullscan/export.
+Cache reuseaftershutdown andcorruptcachemiss verified. A currentlyreferenced
+unpackedimage preserves its finishedjob duringcleanup. No live userprofile writes.
+Fullmodel missing-block diagnosis is not claimed: screenshot lacks elementIDs;
+newbbox catalog/type tools provide a spatial investigation path.
+
+Actualbuildingdelta benchmark0.3.1 in isolatedBlender5.2.3: baseline12026placements,
+5131uniqueprototypes imported61.126s; add10windows conversion0.011s, merge8.432s.
+All12026existing objectIDs/names/mesh pointers retained; all10newwindows reused
+the same intentionally edited sharedmesh. No collection-instance placeholders,
+transformerror0,3packedimages. Readonlysource manifest hash unchanged.
+Fullhost4.2/5.2 ZIPswitch stable0.3.0→EA0.3.1→stable0.3.0 preserves scene/settings,
+uses only owned isolated registration and never saves Preferences.

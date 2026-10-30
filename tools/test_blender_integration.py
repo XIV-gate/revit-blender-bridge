@@ -66,6 +66,19 @@ duplicate = next(obj for obj in instances if obj['revit:id'] == '12')
 assert window.data is duplicate.data
 window.data.vertices[0].co.x += .125
 assert duplicate.data.vertices[0].co.x == window.data.vertices[0].co.x
+import bmesh
+for selected in tuple(bpy.context.selected_objects):
+    selected.select_set(False)
+window.select_set(True)
+bpy.context.view_layer.objects.active = window
+before_edit = window.data.vertices[0].co.x
+assert bpy.ops.object.mode_set(mode='EDIT') == {'FINISHED'}
+edit_mesh = bmesh.from_edit_mesh(window.data)
+edit_mesh.verts.ensure_lookup_table()
+edit_mesh.verts[0].co.x += .125
+bmesh.update_edit_mesh(window.data)
+assert bpy.ops.object.mode_set(mode='OBJECT') == {'FINISHED'}
+assert abs(duplicate.data.vertices[0].co.x - before_edit - .125) < 1e-6
 assert sum(obj.matrix_world.determinant() < 0 for obj in instances) == 1
 assert any(image.packed_file for image in bpy.data.images if image.source == 'FILE')
 assert any(material.name.startswith('Fixture facade material') for material in bpy.data.materials)
@@ -124,6 +137,8 @@ target_props = target_scene.xivgate_revit_bridge
 assert target_props.result_collection in target_scene.collection.children
 assert target_props.result_collection not in original_scene.collection.children
 props.catalog_source = str((run / 'model-a.rvt').resolve()); props.source_rvt = props.catalog_source
+(run / 'model-a.rvt').write_bytes(b'explicit stale source fixture')
+props.cache_directory = str(run / 'cache')
 runtime.STATE.session = SimpleNamespace(source_path='model-b.rvt')
 runtime.STATE.worker = SimpleNamespace(poll=lambda: None)
 with patch.object(runtime, 'begin_scan') as scan, patch.object(runtime, 'source_sha256', return_value='test-only-hash'):

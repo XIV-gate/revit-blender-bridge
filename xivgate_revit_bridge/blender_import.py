@@ -425,3 +425,209 @@ def import_result(usd_path, *, import_id=None, preserve_instances=True, pack_ima
                 if data not in before[kind] and (kind in ('objects', 'collections') or data.users == 0):
                     getattr(bpy.data, kind).remove(data, do_unlink=True)
         raise
+
+
+class _MergeDeclined(Exception):
+    pass
+
+
+def _discard_delta(before, keep_objects=(), keep_collections=()):
+    keep_objects, keep_collections = set(keep_objects), set(keep_collections)
+    objects = [obj for obj in bpy.data.objects if obj not in before['objects'] and obj not in keep_objects]
+    if objects:
+        bpy.data.batch_remove(ids=tuple(objects))
+    collections = [item for item in bpy.data.collections
+                   if item not in before['collections'] and item not in keep_collections]
+    while collections:
+        empty = {item for item in collections if not item.objects and not item.children}
+        if not empty:
+            break
+        collections = [item for item in collections if item not in empty]
+        bpy.data.batch_remove(ids=tuple(empty))
+    for kind in ('meshes', 'materials', 'images'):
+        unused = [data for data in getattr(bpy.data, kind) if data not in before[kind] and data.users == 0]
+        if unused:
+            bpy.data.batch_remove(ids=tuple(unused))
+
+
+def _signature_index(values, key, identity, revision):
+    result = {}
+    for value in sorted(values, key=lambda item: (-item.users, item.name)):
+        signature = value.get(key)
+        if (value.get(OWNER) == identity and value.get(REVISION) == revision
+                and isinstance(signature, str) and re.fullmatch(r'[0-9a-f]{64}', signature)):
+            result.setdefault(signature, value)
+    return result
+
+
+def merge_result(usd_path, *, import_id, selected_element_ids, final_selection_ids,
+                 preserve_instances=True, pack_images=True, source_path=''):
+    """Stage and verify only genuinely new elements, then extend one owned import.
+
+    Return None for ambiguous geometry or ownership so the controller can request
+    a full export. Existing IDs, mesh edits, category collections, root transform,
+    foreign objects and the user's active/selected objects are retained.
+    """
+    added = {str(value) for value in selected_element_ids}
+    final = {str(value) for value in final_selection_ids}
+    roots = [item for item in bpy.data.collections if item.get(OWNER) == import_id and item.get(ROOT_FLAG)]
+    if len(roots) != 1 or not added or not added.issubset(final):
+        return None
+    root = roots[0]
+    if root not in bpy.context.scene.collection.children_recursive:
+        return None
+    revision = root.get(REVISION)
+    old_owned = [obj for obj in bpy.data.objects if obj.get(OWNER) == import_id and obj.get(REVISION) == revision]
+    old_owned_set = set(old_owned)
+    if any(obj.name in scene.objects for scene in bpy.data.scenes if scene != bpy.context.scene for obj in old_owned):
+        return None
+    if any(scene != bpy.context.scene and root in scene.collection.children_recursive for scene in bpy.data.scenes):
+        return None
+    visible = [obj for obj in root.all_objects if obj in old_owned_set and 'revit:id' in obj]
+    all_old = [obj for obj in old_owned if 'revit:id' in obj]
+    old_occurrences = {str(obj['revit:id']) for obj in all_old}
+    root_objects = [obj for obj in root.all_objects if obj in old_owned_set and 'revit:source_offset_metres' in obj]
+    if len(root_objects) != 1 or len(old_occurrences) != len(all_old):
+        return None
+    parent = root_objects[0]
+    try:
+        current = _stored_ids(root, SELECTION, {_element_id(obj) for obj in visible})
+        available = _stored_ids(root, AVAILABLE_IDS, current)
+        geometry = _stored_ids(root, GEOMETRY_IDS, {_element_id(obj) for obj in visible})
+        available_geometry = _stored_ids(root, AVAILABLE_GEOMETRY_IDS, geometry)
+        if (added & available or not final.issubset(available | added)
+                or geometry != {_element_id(obj) for obj in visible}
+                or available_geometry != {_element_id(obj) for obj in all_old}):
+            return None
+        for obj in all_old:
+            if _element_id(obj) not in final and (_source_ids(obj) & final or _selection_parent_ids(obj) & final):
+                return None
+        old_sources = set().union(*(_source_ids(obj) for obj in all_old)) if all_old else set()
+    except (ValueError, KeyError, TypeError):
+        return None
+    before = _snapshot()
+    selected_objects = tuple(bpy.context.selected_objects)
+    active_object = bpy.context.view_layer.objects.active
+    metadata_keys = (SELECTION, GEOMETRY_IDS, AVAILABLE_IDS, AVAILABLE_GEOMETRY_IDS)
+    original_metadata = {key: root.get(key) for key in metadata_keys}
+    guarded_objects = set(old_owned)
+    guarded_objects.update(obj for obj in bpy.data.objects if obj.parent in guarded_objects)
+    original_objects = {obj: (tuple(obj.users_collection), obj.parent, obj.matrix_parent_inverse.copy(), obj.matrix_basis.copy())
+                        for obj in guarded_objects}
+    changed_old = False
+    try:
+        staged = import_result(usd_path, preserve_instances=preserve_instances, pack_images=pack_images,
+                               source_path=source_path, selected_element_ids=added)
+        fresh = next(item for item in bpy.data.collections if item.get(OWNER) == staged['import_id'] and item.get(ROOT_FLAG))
+        fresh_objects = [obj for obj in fresh.all_objects if obj.get(OWNER) == staged['import_id'] and 'revit:id' in obj]
+        if any(obj.type != 'MESH' or _element_id(obj) not in added or str(obj['revit:id']) in old_occurrences
+               for obj in fresh_objects):
+            raise _MergeDeclined()
+        if any(_source_ids(obj) & old_sources or _selection_parent_ids(obj) & (final & available) for obj in fresh_objects):
+            raise _MergeDeclined()
+        fresh_element_ids = {_element_id(obj) for obj in fresh_objects}
+        if any(_selection_parent_ids(obj) & fresh_element_ids for obj in all_old):
+            raise _MergeDeclined()
+        offset = list(root.get('xivgate_rbb_source_offset', ()))
+        if len(offset) != 3 or max(abs(a - b) for a, b in zip(offset, staged['source_offset'])) > 0.000001:
+            raise _MergeDeclined()
+        root_transform = parent.matrix_world.copy()
+        targets = {obj: root_transform @ obj.matrix_world.copy() for obj in fresh_objects}
+        categories = {}
+        for group in root.children:
+            category = group.get(CATEGORY)
+            if group.get(OWNER) == import_id and group.get(REVISION) == revision and category:
+                if category in categories:
+                    raise _MergeDeclined()
+                categories[str(category)] = group
+        destinations = {}
+        for obj in fresh_objects:
+            category = str(obj.get('revit:category', 'Прочее'))
+            if category not in categories:
+                candidates = [item for item in fresh.children if item.get(CATEGORY) == category]
+                if len(candidates) != 1:
+                    raise _MergeDeclined()
+                categories[category] = candidates[0]
+            destinations[obj] = categories[category]
+        mesh_index = _signature_index(before['meshes'], 'revit:geometry_signature', import_id, revision)
+        material_index = _signature_index(before['materials'], 'revit:material_signature', import_id, revision)
+        reused_meshes = 0
+        reused_materials = 0
+        for obj in fresh_objects:
+            signature = obj.data.get('revit:geometry_signature')
+            if preserve_instances and signature in mesh_index:
+                obj.data = mesh_index[signature]
+                reused_meshes += 1
+        for mesh in {obj.data for obj in fresh_objects if obj.data not in before['meshes']}:
+            for index, material in enumerate(mesh.materials):
+                signature = material.get('revit:material_signature') if material else None
+                if signature in material_index:
+                    mesh.materials[index] = material_index[signature]
+                    reused_materials += 1
+        for group in set(destinations.values()):
+            if group not in before['collections']:
+                fresh.children.unlink(group)
+                root.children.link(group)
+        for obj in fresh_objects:
+            destination = destinations[obj]
+            for previous in tuple(obj.users_collection):
+                if previous != destination:
+                    previous.objects.unlink(obj)
+            if obj.name not in destination.objects:
+                destination.objects.link(obj)
+            obj.parent = parent
+            obj.matrix_parent_inverse = Matrix.Identity(4)
+            obj.matrix_world = targets[obj]
+        for kind in before:
+            for data in getattr(bpy.data, kind):
+                if data not in before[kind]:
+                    data[OWNER] = import_id
+                    data[REVISION] = revision
+        _discard_delta(before, keep_objects=fresh_objects, keep_collections=destinations.values())
+        bpy.context.view_layer.update()
+        error = max((abs(obj.matrix_world[row][column] - target[row][column])
+                     for obj, target in targets.items() for row in range(4) for column in range(4)), default=0.0)
+        if error > 0.0005:
+            raise _MergeDeclined()
+        changed_old = True
+        new_geometry = {_element_id(obj) for obj in fresh_objects}
+        root[SELECTION] = json.dumps(sorted(current | added))
+        root[AVAILABLE_IDS] = json.dumps(sorted(available | added))
+        root[GEOMETRY_IDS] = json.dumps(sorted(geometry | new_geometry))
+        root[AVAILABLE_GEOMETRY_IDS] = json.dumps(sorted(available_geometry | new_geometry))
+        result = apply_selection(import_id, final, stash_deselected=True)
+        if result is None:
+            raise _MergeDeclined()
+        result.update(added=len(fresh_objects), reused_meshes=reused_meshes, reused_materials=reused_materials,
+                      packed_images=staged['packed_images'], missing_images=staged['missing_images'], max_transform_error=error)
+        return result
+    except Exception:
+        if changed_old:
+            for obj, (links, old_parent, inverse, basis) in original_objects.items():
+                for collection in tuple(obj.users_collection):
+                    if collection not in links:
+                        collection.objects.unlink(obj)
+                for collection in links:
+                    if obj.name not in collection.objects:
+                        collection.objects.link(obj)
+                obj.parent = old_parent
+                obj.matrix_parent_inverse = inverse
+                obj.matrix_basis = basis
+            for key, value in original_metadata.items():
+                if value is None:
+                    root.pop(key, None)
+                else:
+                    root[key] = value
+            bpy.context.view_layer.update()
+        _discard_delta(before)
+        return None
+    finally:
+        for obj in tuple(bpy.context.selected_objects):
+            obj.select_set(False)
+        for obj in selected_objects:
+            if obj.name in bpy.context.view_layer.objects:
+                obj.select_set(True)
+        if active_object is not None and active_object.name in bpy.context.view_layer.objects:
+            bpy.context.view_layer.objects.active = active_object
+        else:
+            bpy.context.view_layer.objects.active = None

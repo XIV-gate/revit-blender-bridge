@@ -43,3 +43,7 @@ class WorkerProcess:
     def terminate(self):
         if self._process is not None and self._process.poll() is None:
             self._process.terminate()
+            try:
+                self._process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass  # Keep the unfinished job protected if the process has not exited.
