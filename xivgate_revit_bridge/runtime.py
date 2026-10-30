@@ -55,7 +55,7 @@ def _within_job(path):
 
 class Runtime:
     def __init__(self):
-        self.scene = None
+        self.scene_uid = None
         self.session = None
         self.worker = None
         self.request_id = None
@@ -81,8 +81,23 @@ class Runtime:
         self.timing_write_error = ''
 
     @property
+    def scene(self):
+        # RNA wrappers may be invalidated by undo/reallocation. Resolve the ID
+        # afresh, never by name: a different scene may reuse a deleted name.
+        if self.scene_uid is None or not hasattr(bpy.data, 'scenes'):
+            return None
+        return next((scene for scene in bpy.data.scenes if scene.session_uid == self.scene_uid), None)
+
+    @scene.setter
+    def scene(self, scene):
+        self.scene_uid = scene.session_uid if scene is not None else None
+
+    @property
     def props(self):
-        return self.scene.xivgate_revit_bridge
+        scene = self.scene
+        if scene is None:
+            raise RuntimeError('Сцена задания больше не существует; задание остановлено')
+        return scene.xivgate_revit_bridge
 
     def stop(self):
         if self.scene is not None and self.action is not None:
@@ -518,7 +533,12 @@ def _fallback_full(message):
 
 def tick():
     try:
-        if STATE.scene is None or STATE.scene.name not in bpy.data.scenes or STATE.action is None:
+        if STATE.action is None:
+            return None
+        if STATE.scene is None:
+            # Do not orphan a live worker after its receiving scene is removed.
+            _record_stage('scene_removed', terminal=True)
+            STATE.stop()
             return None
         if STATE.action == 'convert':
             code = STATE.converter.poll()
@@ -576,14 +596,29 @@ def tick():
         return None
 
 
-def cancel():
-    if STATE.session and STATE.request_id:
-        STATE.session.cancel(STATE.request_id)
-    STATE.stop()
+def cancel(scene=None):
+    owner = STATE.scene
+    signal_error = None
+    try:
+        if STATE.session and STATE.request_id:
+            STATE.session.cancel(STATE.request_id)
+    except (OSError, ValueError) as error:
+        signal_error = str(error)
+    finally:
+        # A missing scene or an unwritable cancel file must not block stopping.
+        STATE.stop()
     STATE.force_refresh = False
     STATE.force_scan_done = False
-    if STATE.scene is not None:
+    if owner is not None:
         _message('IDLE', 'Задание отменено. Предыдущий результат сохранён.')
+        if signal_error:
+            set_warnings(STATE.props, raw_values(STATE.props.warnings) +
+                         ['Файл отмены недоступен; процесс остановлен напрямую: ' + signal_error])
+    elif scene is not None and scene.library is None:
+        props = scene.xivgate_revit_bridge
+        props.busy = False
+        props.status = 'IDLE'
+        props.message = 'Задание остановлено. Исходная сцена задания больше не существует.'
 
 
 def show_worker():

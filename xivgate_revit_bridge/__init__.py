@@ -3,7 +3,7 @@
 bl_info = {
     "name": "AGR Revit Bridge",
     "author": "XIVgate",
-    "version": (0, 4, 5),
+    "version": (0, 4, 6),
     "blender": (4, 2, 0),
     "location": "3D View > Sidebar > AGR > Revit",
     "description": "Scan local RVT models, select elements, and import shared geometry",

@@ -285,3 +285,21 @@ assembly version changed in C#.
   CS1701 warnings and lack of local Revit2024-2026 live-model coverage remain.
 - ZIP verified, 46 payload files; no personal username paths. SHA256:
   6192d64644ed70bb69ceb57e3865e2481beb08f67df7ce7fbdca2a4645f24e6e.
+
+## Early Access 0.4.6 — Scene RNA lifetime and cancellation
+
+- Exact reported ReferenceError reproduced with a real removed Scene in5.2.3
+  before the fix. Runtime now stores session_uid and resolves current Scene RNA
+  afresh; no long-lived Scene wrapper or name-based reassignment.
+- Final ZIP installed/enabled in isolated5.2.3 and4.2.14: removed owner, reused
+  scene name, rename, real Undo, UI cancellation, unwritable cancel signal and
+  automatic worker stop after owner removal passed. Worker I/O uses a fixture;
+  this is not a live Revit termination/export test.
+- Actual0.4.5->0.4.6->0.4.5 switches passed in both hosts. Controller, scene binding,
+  delta/cache, runtime errors and log export source regressions passed5.2.3.
+- 118 pure tests successful (one privilege skip). Six workers rebuilt0.4.6.0,
+  unchanged C# logic and existing net10 CS1701 baseline caveat.
+- ZIP verified; SHA256:
+  d3f36344c0d37f4bbd77743f8543cd1a5509032feb5bcda7696dc54db34b7b5b.
+- The remote Revit2026 export delay/failure remains unproven without its logs;
+  reproducing the cancellation bug does not establish that separate root cause.

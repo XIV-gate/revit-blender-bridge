@@ -682,7 +682,7 @@ class RBB_OT_cancel(bpy.types.Operator):
     bl_label = 'Отменить'
     bl_description = 'Остановить текущее задание и закрыть рабочий Revit плагина; уже импортированная модель сохраняется'
     def execute(self, context):
-        runtime.cancel()
+        runtime.cancel(context.scene)
         return {'FINISHED'}
 
 
