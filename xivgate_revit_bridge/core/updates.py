@@ -28,6 +28,11 @@ _SHA256 = re.compile(r'[0-9a-f]{64}\Z')
 _CONTROL = 'PACKAGE_MANIFEST.json'
 _CDN_HOSTS = frozenset(('github.com', 'release-assets.githubusercontent.com',
                         'objects.githubusercontent.com', 'github-releases.githubusercontent.com'))
+_NET48_DEPENDENCIES = frozenset((
+    'System.Text.Json.dll', 'System.Text.Encodings.Web.dll', 'Microsoft.Bcl.AsyncInterfaces.dll',
+    'System.Memory.dll', 'System.Buffers.dll', 'System.Runtime.CompilerServices.Unsafe.dll',
+    'System.Threading.Tasks.Extensions.dll', 'System.Numerics.Vectors.dll',
+))
 
 
 class UpdateError(RuntimeError):
@@ -51,11 +56,13 @@ def _asset_url(version):
     return f'https://github.com/{REPOSITORY}/releases/download/v{version}/{_asset_name(version)}'
 
 
-def release_info(payload, current_version):
-    """Accept only a published stable release and its exact verified own asset."""
+def _release_info(payload, current_version, allow_early=False):
+    """Validate the same repository, asset and digest rules for either channel."""
     try:
-        if not isinstance(payload, dict) or payload.get('draft') is not False or payload.get('prerelease') is not False:
-            raise UpdateError('Релиз не опубликован как стабильный')
+        if (not isinstance(payload, dict) or payload.get('draft') is not False
+                or type(payload.get('prerelease')) is not bool
+                or (payload['prerelease'] and not allow_early)):
+            raise UpdateError('Релиз не опубликован в разрешённом канале')
         tag = payload['tag_name']
         if (not isinstance(tag, str) or not tag.startswith('v')
                 or not isinstance(payload.get('published_at'), str)
@@ -82,6 +89,34 @@ def release_info(payload, current_version):
                     sha256=digest[7:], size=size, release_url=release_url)
     except (KeyError, TypeError, ValueError) as error:
         raise UpdateError('GitHub вернул неверное описание релиза') from error
+
+
+def release_info(payload, current_version):
+    """Legacy stable-only latest-release API; never offers an automatic downgrade."""
+    return _release_info(payload, current_version)
+
+
+def release_catalog(payload, current_version):
+    """Sorted verified stable/early choices; a downgrade requires explicit selection.
+
+    Invalid entries are omitted, including drafts, nonnumeric tags and assets
+    lacking a trusted SHA256. Repeated versions from overlapping pages collapse
+    to the first response entry. available retains its legacy 'newer' meaning;
+    installable also permits older versions but never the running version.
+    """
+    current = _version(current_version)
+    if not isinstance(payload, list):
+        raise UpdateError('GitHub вернул неверный список релизов')
+    versions = {}
+    for item in payload:
+        try:
+            info = _release_info(item, current_version, allow_early=True)
+        except UpdateError:
+            continue
+        info['channel'] = 'early' if item['prerelease'] else 'stable'
+        info['installable'] = _version(info['version']) != current
+        versions.setdefault(info['version'], info)
+    return sorted(versions.values(), key=lambda info: _version(info['version']), reverse=True)
 
 
 def _trusted_url(url, asset):
@@ -144,6 +179,35 @@ def fetch_release(current_version):
         raise UpdateError('GitHub вернул повреждённое описание релиза') from error
 
 
+def fetch_releases(current_version):
+    """Fetch at most three 100-release pages and 2 MiB of metadata in total."""
+    _version(current_version)
+    payload = []
+    consumed = 0
+    try:
+        for page in range(1, 4):
+            request = urllib.request.Request(
+                f'https://api.github.com/repos/{REPOSITORY}/releases?per_page=100&page={page}', headers={
+                    'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28',
+                    'User-Agent': 'AGR-Revit-Bridge'})
+            with _open_url(request) as response:
+                data = response.read(MAX_METADATA_BYTES - consumed + 1)
+            consumed += len(data)
+            if consumed > MAX_METADATA_BYTES:
+                raise UpdateError('Список релизов превышает допустимый размер')
+            items = json.loads(data.decode('utf-8'))
+            if not isinstance(items, list) or len(items) > 100:
+                raise UpdateError('GitHub вернул неверную страницу релизов')
+            payload.extend(items)
+            if len(items) < 100:
+                break
+        return release_catalog(payload, current_version)
+    except (urllib.error.URLError, OSError) as error:
+        raise _network_error(error) from error
+    except (ValueError, UnicodeError) as error:
+        raise UpdateError('GitHub вернул повреждённый список релизов') from error
+
+
 def download_release(info, existing_directory):
     """Download exclusively, enforce the advertised size and digest, remove partials."""
     try:
@@ -152,8 +216,8 @@ def download_release(info, existing_directory):
             raise UpdateError('Адрес архива не соответствует релизу AGR')
         if not _SHA256.fullmatch(info['sha256']) or type(info['size']) is not int or not 0 < info['size'] <= MAX_ARCHIVE_BYTES:
             raise UpdateError('Неверная контрольная сумма или размер архива')
-        if info.get('available') is not True:
-            raise UpdateError('Более новая версия не выбрана')
+        if info.get('installable', info.get('available')) is not True:
+            raise UpdateError('Другая версия для установки не выбрана')
         directory = _safe_directory(existing_directory)
         target = directory / info['asset_name']
         request = urllib.request.Request(info['url'], headers={'User-Agent': 'AGR-Revit-Bridge', 'Accept': 'application/octet-stream'})
@@ -217,6 +281,50 @@ def _json_object(data):
     return json.loads(data.decode('utf-8'), object_pairs_hook=pairs)
 
 
+def _worker_paths(manifest, version):
+    legacy = f'runtime/revit/2027/{version}/XIVgate.RevitBridge.Worker.dll'
+    if manifest.get('worker') != legacy:
+        raise UpdateError('Сборка Revit 2027 должна находиться в каталоге своей версии')
+    workers = manifest.get('workers', {'2027': legacy})
+    allowed = frozenset(('2024', '2025', '2025-net10', '2026', '2026-net10', '2027'))
+    if not isinstance(workers, dict) or not workers or workers.get('2027') != legacy or set(workers) - allowed:
+        raise UpdateError('Неверный перечень сборок Revit')
+    for key, path in workers.items():
+        if path != f'runtime/revit/{key}/{version}/XIVgate.RevitBridge.Worker.dll':
+            raise UpdateError('Каждая сборка Revit должна находиться в каталоге своей версии')
+    return frozenset(workers.values())
+
+
+def _runtime_paths(manifest, version):
+    """Declared workers plus narrowly allowed version-owned support payloads."""
+    workers = _worker_paths(manifest, version)
+    extra = manifest.get('runtime_files', [])
+    if not isinstance(extra, list) or any(not isinstance(path, str) for path in extra) or len(extra) != len(set(extra)):
+        raise UpdateError('Неверный перечень файлов runtime')
+    paths = set(workers)
+    worker_keys = manifest.get('workers', {'2027': manifest['worker']})
+    for path in extra:
+        _relative(path)
+        if path in workers:
+            paths.add(path)
+            continue
+        parts = path.split('/')
+        if (len(parts) != 5 or parts[:2] != ['runtime', 'revit'] or parts[2] not in worker_keys
+                or parts[3] != version):
+            raise UpdateError('Вспомогательный файл должен находиться в каталоге своей сборки Revit')
+        filename = parts[4]
+        permitted = (parts[2] == '2024' and filename in _NET48_DEPENDENCIES)
+        permitted |= filename in ('XIVgate.RevitBridge.Worker.deps.json', 'XIVgate.RevitBridge.Worker.runtimeconfig.json')
+        if not permitted:
+            raise UpdateError('Неожиданный вспомогательный файл runtime: ' + path)
+        paths.add(path)
+    if '2024' in worker_keys:
+        required = {f'runtime/revit/2024/{version}/{name}' for name in _NET48_DEPENDENCIES}
+        if not required.issubset(paths):
+            raise UpdateError('В пакете отсутствуют обязательные зависимости Revit 2024')
+    return frozenset(paths)
+
+
 def _validate_files(files, manifest, version, blender_version=None):
     _version(version)
     if (not isinstance(manifest, dict) or type(manifest.get('schema')) is not int or manifest['schema'] != 1
@@ -227,11 +335,9 @@ def _validate_files(files, manifest, version, blender_version=None):
         raise UpdateError('Неверная минимальная версия Blender')
     if blender_version is not None and _version(blender_version) < tuple(minimum):
         raise UpdateError('Для обновления требуется более новая версия Blender')
-    worker = f'runtime/revit/2027/{version}/XIVgate.RevitBridge.Worker.dll'
-    if manifest.get('worker') != worker:
-        raise UpdateError('Сборка Revit должна находиться в каталоге своей версии')
+    runtime = _runtime_paths(manifest, version)
     declared = manifest.get('files')
-    if not isinstance(declared, dict) or set(files) != set(declared) or worker not in files:
+    if not isinstance(declared, dict) or set(files) != set(declared) or not runtime.issubset(files):
         raise UpdateError('Состав ZIP не совпадает с манифестом пакета')
     seen = set()
     total = 0
@@ -246,10 +352,10 @@ def _validate_files(files, manifest, version, blender_version=None):
         total += len(data)
         if len(data) > MAX_ARCHIVE_BYTES or total > MAX_UNPACKED_BYTES:
             raise UpdateError('Распакованный пакет слишком велик')
-        if name.lower().endswith('.dll') and name != worker:
+        if name.lower().endswith('.dll') and name not in runtime:
             raise UpdateError('В пакете обнаружена посторонняя DLL')
-        if name.startswith('runtime/') and name != worker:
-            raise UpdateError('В runtime разрешена только сборка данной версии')
+        if name.casefold().startswith('runtime/') and name not in runtime:
+            raise UpdateError('В runtime разрешены только объявленные файлы данной версии')
         if name.lower().endswith(('.exe', '.pyd', '.so', '.bat', '.cmd', '.ps1')):
             raise UpdateError('В пакете обнаружен неожиданный исполняемый файл')
         if name.endswith('.py'):
@@ -521,7 +627,7 @@ def install_package(package, addon_root, backup_directory):
                 raise UpdateError('Неизвестный установленный манифест; требуется ручная проверка')
             for name in old['files']:
                 _relative(name)
-                if name not in data and not name.startswith('runtime/'):
+                if name not in data and not name.casefold().startswith('runtime/'):
                     path = _target(root, name)
                     expected_hash = old['files'][name]
                     if (path.is_file() and _SHA256.fullmatch(str(expected_hash))
@@ -533,12 +639,13 @@ def install_package(package, addon_root, backup_directory):
                     if not path.is_file() or path.read_bytes() != data[name]:
                         raise UpdateError('Обновление затрагивает неуправляемый файл: ' + name)
                     del data[name]
-        worker = package.manifest['worker']
-        worker_target = _target(root, worker)
-        if worker_target.exists():
-            if not worker_target.is_file() or worker_target.read_bytes() != package.files[worker]:
-                raise UpdateError('В каталоге новой версии уже есть другая DLL; перезапись запрещена')
-            data.pop(worker, None)
+        runtime = _runtime_paths(package.manifest, package.manifest['version'])
+        for worker in runtime:
+            worker_target = _target(root, worker)
+            if worker_target.exists():
+                if not worker_target.is_file() or worker_target.read_bytes() != package.files[worker]:
+                    raise UpdateError('В каталоге новой версии уже есть другая DLL; перезапись запрещена')
+                data.pop(worker, None)
         transaction = PackageTransaction(root, backup, lock)
         for name in sorted(set(data) | stale):
             transaction.snapshot(name)
@@ -547,7 +654,7 @@ def install_package(package, addon_root, backup_directory):
         for name in names:
             path = _target(root, name)
             transaction.parents(path)
-            _atomic_file(path, data[name], exclusive=name == worker)
+            _atomic_file(path, data[name], exclusive=name in runtime)
             transaction.applied.append((name, data[name]))
         for name in sorted(stale):
             path = _target(root, name)

@@ -1,5 +1,6 @@
 """Build a compact USD handoff with Blender's bundled USD/Python runtime."""
 import json
+import hashlib
 from pathlib import Path
 
 from .geometry_cache import matrix_rows, safe_asset_path, validate_prototype
@@ -41,6 +42,10 @@ def build_usd(manifest_path, target_path, *, include_materials=True, include_tex
     UsdGeom.SetStageMetersPerUnit(stage, 1)
     UsdGeom.Xform.Define(stage, '/Prototypes').CreateVisibilityAttr('invisible')
     materials = {}
+    material_signatures = {int(key): hashlib.sha256(json.dumps(
+        {field: value for field, value in material.items() if field != 'id'},
+        sort_keys=True, ensure_ascii=False, allow_nan=False).encode('utf-8')).hexdigest()
+        for key, material in manifest['materials'].items()}
     missing = []
     if include_materials:
         for key, material in manifest['materials'].items():
@@ -48,6 +53,7 @@ def build_usd(manifest_path, target_path, *, include_materials=True, include_tex
             usd_material = UsdShade.Material.Define(stage, '/Looks/' + token)
             usd_material.GetPrim().SetDisplayName(material['name'])
             usd_material.GetPrim().CreateAttribute('revit:source_material_id', Sdf.ValueTypeNames.String, custom=True).Set(str(material.get('source_material_id', key)))
+            usd_material.GetPrim().CreateAttribute('revit:material_signature', Sdf.ValueTypeNames.String, custom=True).Set(material_signatures[int(key)])
             shader = UsdShade.Shader.Define(stage, str(usd_material.GetPath()) + '/PreviewSurface')
             shader.CreateIdAttr('UsdPreviewSurface')
             shader.CreateInput('diffuseColor', Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*[srgb(float(c)) for c in material['color']]))
@@ -91,6 +97,11 @@ def build_usd(manifest_path, target_path, *, include_materials=True, include_tex
             path = '/Prototypes/p_' + str(prototype['id'])
             UsdGeom.Xform.Define(stage, path)
             mesh = UsdGeom.Mesh.Define(stage, path + '/mesh')
+            geometry_identity = hashlib.sha256(np.ascontiguousarray(records['vertices']).tobytes())
+            geometry_identity.update(bytes((include_materials, include_textures)))
+            for key in records['material']:
+                geometry_identity.update(bytes.fromhex(material_signatures[int(key)]))
+            mesh.GetPrim().CreateAttribute('revit:geometry_signature', Sdf.ValueTypeNames.String, custom=True).Set(geometry_identity.hexdigest())
             mesh.CreateSubdivisionSchemeAttr('none')
             mesh.CreatePointsAttr(Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(vertices[:, :3])))
             mesh.CreateFaceVertexCountsAttr(Vt.IntArray.FromNumpy(np.full(int(prototype['triangles']), 3, dtype=np.int32)))
@@ -119,8 +130,12 @@ def build_usd(manifest_path, target_path, *, include_materials=True, include_tex
         obj.GetPrim().GetReferences().AddInternalReference('/Prototypes/p_' + str(item['prototype']))
         obj.GetPrim().SetInstanceable(True)
         obj.AddTransformOp().Set(Gf.Matrix4d(*[v for row in matrix_rows(item['transform']) for v in row]))
-        for name in ('id', 'unique_id', 'name', 'category', 'workset', 'category_id', 'workset_id', 'decision', 'prototype'):
+        for name in ('id', 'unique_id', 'name', 'category', 'workset', 'category_id', 'workset_id', 'type_name', 'family_name', 'decision', 'prototype'):
             obj.GetPrim().CreateAttribute('revit:' + name, Sdf.ValueTypeNames.String, custom=True).Set(str(item.get(name, '')))
+        obj.GetPrim().CreateAttribute('revit:element_id', Sdf.ValueTypeNames.String, custom=True).Set(str(item['id']))
+        obj.GetPrim().CreateAttribute('revit:source_element_ids', Sdf.ValueTypeNames.String, custom=True).Set(json.dumps(item.get('source_element_ids', [str(item['id'])])))
+        obj.GetPrim().CreateAttribute('revit:parent_id', Sdf.ValueTypeNames.String, custom=True).Set(str(item.get('parent_id') or ''))
+        obj.GetPrim().CreateAttribute('revit:selection_parent_ids', Sdf.ValueTypeNames.String, custom=True).Set(json.dumps(item.get('selection_parent_ids', [])))
     offset = Gf.Vec3d(0)
     if center_model:
         if source_offset is not None:

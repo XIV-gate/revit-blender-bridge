@@ -4,7 +4,11 @@ import ast
 import hashlib
 import json
 from pathlib import Path
+import sys
 import zipfile
+
+if __package__ in (None, ''):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 def build(worker, output):
@@ -17,21 +21,42 @@ def build(worker, output):
         raise ValueError('Blender metadata differs from canonical VERSION')
     if 'AssemblyInformationalVersion("' + version + '")' not in (source / 'revit_worker' / 'AssemblyInfo.cs').read_text():
         raise ValueError('Worker metadata differs from canonical VERSION')
-    worker, output = Path(worker).resolve(), Path(output).resolve()
-    if not worker.is_file() or worker.name != 'XIVgate.RevitBridge.Worker.dll':
-        raise ValueError('Choose the compiled XIVgate worker DLL')
+    workers = worker if isinstance(worker, dict) else {'2027': worker}
+    workers = {key: Path(path).resolve() for key, path in workers.items()}
+    if '2027' not in workers or set(workers) - {'2024', '2025', '2025-net10', '2026', '2026-net10', '2027'}:
+        raise ValueError('Choose known Revit variants including 2027')
+    if any(not path.is_file() or path.name != 'XIVgate.RevitBridge.Worker.dll' for path in workers.values()):
+        raise ValueError('Choose compiled XIVgate worker DLLs')
+    output = Path(output).resolve()
     if output.exists() or not output.parent.is_dir():
         raise ValueError('Choose a fresh ZIP in an existing output directory')
     module_root = source / 'xivgate_revit_bridge'
     files = {path.relative_to(module_root).as_posix(): path.read_bytes()
              for path in sorted(module_root.rglob('*.py'))
              if not any(part.startswith('.') or part == '__pycache__' for part in path.relative_to(module_root).parts)}
-    worker_name = f'runtime/revit/2027/{version}/' + worker.name
-    files[worker_name] = worker.read_bytes()
+    worker_names, runtime_files = {}, []
+    from xivgate_revit_bridge.core.updates import _NET48_DEPENDENCIES
+    for key, path in workers.items():
+        folder = f'runtime/revit/{key}/{version}/'
+        worker_names[key] = folder + path.name
+        files[worker_names[key]] = path.read_bytes()
+        allowed = {'XIVgate.RevitBridge.Worker.deps.json', 'XIVgate.RevitBridge.Worker.runtimeconfig.json'}
+        if key == '2024':
+            allowed.update(_NET48_DEPENDENCIES)
+            missing = [name for name in _NET48_DEPENDENCIES if not (path.parent / name).is_file()]
+            if missing:
+                raise ValueError('Missing required .NET Framework dependencies: ' + ', '.join(sorted(missing)))
+        for name in sorted(allowed):
+            dependency = path.parent / name
+            if dependency.is_file():
+                files[folder + name] = dependency.read_bytes()
+                runtime_files.append(folder + name)
     files['USER_GUIDE_RU.md'] = (source / 'docs' / 'USER_GUIDE_RU.md').read_bytes()
+    files['THIRD_PARTY_NOTICES.md'] = (source / 'docs' / 'THIRD_PARTY_NOTICES.md').read_bytes()
     files['VERSION'] = (version + '\n').encode('utf-8')
     manifest = dict(schema=1, id='xivgate_revit_bridge', version=version,
-                    blender_min=list(info['blender']), worker=worker_name,
+                    blender_min=list(info['blender']), worker=worker_names['2027'],
+                    workers=worker_names, runtime_files=runtime_files,
                     files={name: hashlib.sha256(payload).hexdigest() for name, payload in sorted(files.items())})
     files['PACKAGE_MANIFEST.json'] = json.dumps(manifest, sort_keys=True, indent=2).encode('utf-8')
     entries = {'xivgate_revit_bridge/' + name: payload for name, payload in files.items()}
@@ -46,7 +71,12 @@ def build(worker, output):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--worker', required=True)
+    inputs = parser.add_mutually_exclusive_group(required=True)
+    inputs.add_argument('--worker', help='Single Revit 2027 worker for development checks')
+    inputs.add_argument('--workers-root', help='Directory containing all six variant subdirectories')
     parser.add_argument('--output', required=True)
     args = parser.parse_args()
-    print(build(args.worker, args.output))
+    workers = ({key: Path(args.workers_root) / key / 'XIVgate.RevitBridge.Worker.dll'
+                for key in ('2024', '2025', '2025-net10', '2026', '2026-net10', '2027')}
+               if args.workers_root else args.worker)
+    print(build(workers, args.output))

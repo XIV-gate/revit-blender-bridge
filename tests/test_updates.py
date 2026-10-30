@@ -41,6 +41,24 @@ def package_bytes(version='0.3.0', changes=None):
     return files
 
 
+def multi_worker_bytes(version='0.3.1'):
+    files = package_bytes(version)
+    manifest = json.loads(files.pop('PACKAGE_MANIFEST.json'))
+    manifest['workers'] = {}
+    for key in ('2024', '2025', '2025-net10', '2026', '2026-net10', '2027'):
+        worker = f'runtime/revit/{key}/{version}/XIVgate.RevitBridge.Worker.dll'
+        manifest['workers'][key] = worker
+        files[worker] = ('worker-' + key + '-' + version).encode()
+    manifest['runtime_files'] = []
+    for name in updates._NET48_DEPENDENCIES:
+        dependency = f'runtime/revit/2024/{version}/{name}'
+        manifest['runtime_files'].append(dependency)
+        files[dependency] = ('dependency-' + name).encode()
+    manifest['files'] = {name: digest(value) for name, value in files.items()}
+    files['PACKAGE_MANIFEST.json'] = json.dumps(manifest).encode()
+    return files
+
+
 class Response(io.BytesIO):
     def __init__(self, value, url='https://api.github.com'):
         super().__init__(value)
@@ -83,6 +101,140 @@ class UpdateTests(unittest.TestCase):
         self.assertTrue(value['available'])
         self.assertFalse(updates.release_info(release('0.1.0'), '0.2.0')['available'])
         self.assertFalse(updates.release_info(release('0.2.0'), '0.2.0')['available'])
+
+    def test_release_catalog_sorted_unique_channels_and_explicit_downgrade(self):
+        early = release('0.3.1')
+        early['prerelease'] = True
+        payload = [release('0.2.0'), early, release('0.3.0'), early, release('0.10.0')]
+        catalog = updates.release_catalog(payload, '0.3.0')
+        self.assertEqual([item['version'] for item in catalog], ['0.10.0', '0.3.1', '0.3.0', '0.2.0'])
+        self.assertEqual(catalog[1]['channel'], 'early')
+        self.assertEqual(catalog[0]['channel'], 'stable')
+        self.assertFalse(catalog[2]['installable'])
+        self.assertTrue(catalog[3]['installable'])
+        self.assertFalse(catalog[3]['available'])
+        with patch.object(updates, '_open_url', return_value=Response(b'zip')):
+            target = updates.download_release(catalog[3], self.root)
+        self.assertEqual(target.read_bytes(), b'zip')
+        with self.assertRaises(updates.UpdateError):
+            updates.release_info(early, '0.3.0')
+
+    def test_release_catalog_skips_invalid_assets_in_every_channel(self):
+        malformed = []
+        for prerelease in (False, True):
+            for mutate in (lambda item: item.update(draft=True),
+                           lambda item: item.update(tag_name='v0.3.1-early'),
+                           lambda item: item['assets'][0].update(digest='sha256:wrong'),
+                           lambda item: item['assets'][0].update(browser_download_url='https://example.com/file.zip')):
+                item = release('0.3.1')
+                item['prerelease'] = prerelease
+                mutate(item)
+                malformed.append(item)
+        self.assertEqual(updates.release_catalog(malformed + [release()], '0.2.0')[0]['version'], '0.3.0')
+        self.assertEqual(len(updates.release_catalog(malformed + [release()], '0.2.0')), 1)
+        with self.assertRaises(updates.UpdateError):
+            updates.release_catalog({'message': 'bad response'}, '0.2.0')
+
+    def test_fetch_releases_bounded_pagination_and_offline_failures(self):
+        page = [release('0.3.0') for _ in range(100)]
+        with patch.object(updates, '_open_url', side_effect=[Response(json.dumps(page).encode()) for _ in range(3)]) as opened:
+            catalog = updates.fetch_releases('0.2.0')
+        self.assertEqual(len(catalog), 1)
+        self.assertEqual(opened.call_count, 3)
+        self.assertTrue(opened.call_args_list[0].args[0].full_url.endswith('/releases?per_page=100&page=1'))
+        self.assertTrue(opened.call_args_list[2].args[0].full_url.endswith('page=3'))
+        with patch.object(updates, '_open_url', return_value=Response(b'[]')) as opened:
+            self.assertEqual(updates.fetch_releases('0.2.0'), [])
+            self.assertEqual(opened.call_count, 1)
+        for error in (urllib.error.URLError('offline'), urllib.error.HTTPError('url', 404, 'missing', {}, None)):
+            with patch.object(updates, '_open_url', side_effect=error):
+                with self.assertRaises(updates.UpdateError):
+                    updates.fetch_releases('0.2.0')
+        with patch.object(updates, '_open_url', return_value=Response(b'x' * (updates.MAX_METADATA_BYTES + 1))):
+            with self.assertRaises(updates.UpdateError):
+                updates.fetch_releases('0.2.0')
+
+    def test_multi_worker_package_validation_and_install_rollback(self):
+        files = multi_worker_bytes()
+        package = updates.validate_archive(self.archive(files), '0.3.1')
+        self.assertEqual(len(package.manifest['workers']), 6)
+        root, backup = self.installed()
+        transaction = updates.install_package(package, root, backup)
+        for worker in package.manifest['workers'].values():
+            self.assertEqual((root / worker).read_bytes(), files[worker])
+        self.assertTrue((root / 'runtime/revit/2027/0.2.0/XIVgate.RevitBridge.Worker.dll').is_file())
+        transaction.rollback()
+        for worker in package.manifest['workers'].values():
+            self.assertFalse((root / worker).exists())
+        self.assertEqual((root / 'VERSION').read_text().strip(), '0.2.0')
+
+    def test_multi_worker_paths_and_all_dlls_are_immutable(self):
+        files = multi_worker_bytes()
+        package = updates.validate_archive(self.archive(files), '0.3.1')
+        root, backup = self.installed()
+        for worker in package.manifest['workers'].values():
+            target = root / worker
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b'conflicting worker')
+            with self.subTest(worker=worker), self.assertRaises(updates.UpdateError):
+                updates.install_package(package, root, backup)
+            self.assertEqual(target.read_bytes(), b'conflicting worker')
+            target.unlink()
+        for key, value in [('2023', 'runtime/revit/2023/0.3.1/XIVgate.RevitBridge.Worker.dll'),
+                           ('2026', 'runtime/revit/2026/0.2.0/XIVgate.RevitBridge.Worker.dll'),
+                           ('2027', 'runtime/revit/2027/0.3.1/Unexpected.dll')]:
+            files = multi_worker_bytes()
+            manifest = json.loads(files['PACKAGE_MANIFEST.json'])
+            manifest['workers'][key] = value
+            files['PACKAGE_MANIFEST.json'] = json.dumps(manifest).encode()
+            with self.subTest(key=key), self.assertRaises(updates.UpdateError):
+                updates.validate_archive(self.archive(files), '0.3.1')
+
+    def test_runtime_dependencies_are_explicit_checked_and_immutable(self):
+        files = multi_worker_bytes()
+        dependency = 'runtime/revit/2024/0.3.1/System.Text.Json.dll'
+        files[dependency] = b'approved Microsoft dependency'
+        manifest = json.loads(files['PACKAGE_MANIFEST.json'])
+        manifest['files'][dependency] = digest(files[dependency])
+        manifest['runtime_files'] = list(manifest['workers'].values()) + manifest['runtime_files']
+        files['PACKAGE_MANIFEST.json'] = json.dumps(manifest).encode()
+        package = updates.validate_archive(self.archive(files), '0.3.1')
+        root, backup = self.installed()
+        target = root / dependency
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b'different existing dependency')
+        with self.assertRaises(updates.UpdateError):
+            updates.install_package(package, root, backup)
+        self.assertEqual(target.read_bytes(), b'different existing dependency')
+        target.unlink()
+        transaction = updates.install_package(package, root, backup)
+        self.assertEqual(target.read_bytes(), files[dependency])
+        transaction.rollback()
+        self.assertFalse(target.exists())
+        for bad in ['runtime/revit/2024/0.3.1/RevitAPI.dll',
+                    'runtime/revit/2024/0.3.1/Unknown.dll',
+                    'runtime/revit/2024/0.3.0/System.Text.Json.dll',
+                    'runtime/revit/2027/0.3.1/System.Text.Json.dll']:
+            altered = dict(files)
+            value = json.loads(files['PACKAGE_MANIFEST.json'])
+            value['runtime_files'].append(bad)
+            value['files'][bad] = digest(b'bad dependency')
+            altered[bad] = b'bad dependency'
+            altered['PACKAGE_MANIFEST.json'] = json.dumps(value).encode()
+            with self.subTest(path=bad), self.assertRaises(updates.UpdateError):
+                updates.validate_archive(self.archive(altered), '0.3.1')
+
+    def test_net48_worker_requires_every_runtime_dependency(self):
+        for name in updates._NET48_DEPENDENCIES:
+            files = multi_worker_bytes()
+            missing = f'runtime/revit/2024/0.3.1/{name}'
+            files.pop(missing)
+            manifest = json.loads(files['PACKAGE_MANIFEST.json'])
+            manifest['runtime_files'].remove(missing)
+            manifest['files'].pop(missing)
+            files['PACKAGE_MANIFEST.json'] = json.dumps(manifest).encode()
+            with self.subTest(name=name), self.assertRaises(updates.UpdateError):
+                updates.validate_archive(self.archive(files), '0.3.1')
 
     def test_release_rejects_foreign_malformed_and_unverified_assets(self):
         for mutate in [lambda p: p.update(draft=True), lambda p: p.update(prerelease=True),

@@ -7,10 +7,15 @@ The primary host is Blender 5.2; Blender 4.2 compatibility is retained.
 ## Release contract
 
 Repository: `XIV-gate/revit-blender-bridge`. The user-triggered updater reads
-`/repos/XIV-gate/revit-blender-bridge/releases/latest` without credentials. It
-requires a published stable `vX.Y.Z` release and exactly one uploaded asset named
+`/repos/XIV-gate/revit-blender-bridge/releases?per_page=100&page=N` without
+credentials (at most three pages and 2MiB total). Each listed release requires a
+published numeric `vX.Y.Z` tag and exactly one uploaded asset named
 `agr_revit_bridge-X.Y.Z.zip`, with a valid GitHub SHA256 digest and bounded size.
-Drafts, prereleases, downgrades and assets from another repository are rejected.
+GitHub `prerelease=false` defines stable; `prerelease=true` defines Early Access.
+The default is stable. Drafts and incomplete/invalid releases are omitted.
+Downgrades are allowed only by explicit selection; the current version is not
+reinstalled. A confirmation names the version and flags Early Access/downgrades.
+The old latest-only API remains available for compatibility with 0.2.0.
 Metadata and downloads have time/size limits and restricted HTTPS redirects.
 Blender's offline setting is respected; preferences are never changed to allow networking.
 
@@ -29,7 +34,7 @@ refusal or timeout aborts the update rather than force-killing it.
 
 Files are replaced in place with rollback snapshots, rather than renaming the
 whole add-on directory. The worker path is
-`runtime/revit/2027/X.Y.Z/XIVgate.RevitBridge.Worker.dll`. Existing differing DLLs
+`runtime/revit/<variant>/X.Y.Z/XIVgate.RevitBridge.Worker.dll`. Existing differing DLLs
 are not overwritten, and earlier version directories remain untouched. The
 owned `.addin` pointer is repointed with no-clobber publication and can be restored.
 Foreign pointers and pointers outside this installation's runtime are refused.
@@ -62,5 +67,17 @@ source Git checkouts are never overwritten by the updater.
    is also an explicit owner decision; private drafts do not work for anonymous updates.
 
 The builder never includes Autodesk SDK assemblies, models, preferences, caches,
-credentials or test output. Only the compiled XIVgate worker is distributed.
+credentials or test output. XIVgate workers and required Microsoft runtime support libraries are distributed;
+Autodesk API assemblies are build references only. Third-party notices accompany
+redistributed libraries. A declared2024worker requires the complete .NET48 JSON
+runtime dependency set; the validator rejects missing dependencies. Runtime
+payloads are immutable per version, including support libraries.
 No public license is added automatically.
+
+## Branches and promotion
+
+`main` carries stable releases; `early-access` carries experimental changes.
+GitHub prerelease flags, not branch names, determine the Blender channel.
+0.3.0 remains latest stable while 0.3.1/0.3.2 test builds are prereleases.
+A tested build can be promoted deliberately by changing its release status;
+never replace an existing published ZIP with different bytes under the same version.

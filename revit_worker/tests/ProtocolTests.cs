@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
+using System.Runtime.CompilerServices;
 using XIVgate.RevitBridge;
 
 static class ProtocolTests
@@ -13,10 +14,33 @@ static class ProtocolTests
     static void Throws(Action action, string label) { bool failed = false; try { action(); } catch (ArgumentException) { failed = true; } catch (IOException) { failed = true; } Check(failed, label); }
     public static int Main(string[] args)
     {
+        using var dependencies = FrameworkDependencies.Install(typeof(ProtocolTests).Assembly, Console.WriteLine);
+        return Run(args);
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int Run(string[] args)
+    {
         string root = Path.GetFullPath(args[0]);
         string file = Path.Combine(root, "protocol-" + Guid.NewGuid().ToString("N") + ".json");
         try {
+#if NETFRAMEWORK
+            using (var scope = FrameworkDependencies.Install(typeof(ProtocolTests).Assembly)) {
+                var resolve = typeof(FrameworkDependencies).GetMethod("Resolve", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+                string unsafeName = System.Reflection.AssemblyName.GetAssemblyName(Path.Combine(root, "System.Runtime.CompilerServices.Unsafe.dll")).FullName;
+                Check(resolve.Invoke(scope, new object?[] { null, new ResolveEventArgs(unsafeName) }) == null, "null caller is rejected after JSON-only bootstrap completes");
+                Check(resolve.Invoke(scope, new object?[] { null, new ResolveEventArgs(unsafeName, typeof(string).Assembly) }) == null, "foreign framework/plugin requester is never redirected");
+                var ownDependency = resolve.Invoke(scope, new object?[] { null, new ResolveEventArgs(unsafeName, typeof(ProtocolTests).Assembly) }) as System.Reflection.Assembly;
+                Check(ownDependency != null && string.Equals(Path.GetDirectoryName(ownDependency.Location), root, StringComparison.OrdinalIgnoreCase), "own dependency resolves only from exact worker folder");
+                Check(resolve.Invoke(scope, new object?[] { null, new ResolveEventArgs("RevitAPI, Version=24.0.0.0, Culture=neutral, PublicKeyToken=null", typeof(ProtocolTests).Assembly) }) == null, "Autodesk assemblies are never resolved or bundled by dependency scope");
+            }
+#endif
             string session = Guid.NewGuid().ToString(), request = Guid.NewGuid().ToString();
+            Check(Compat.Hex(Compat.Sha256(Encoding.UTF8.GetBytes("abc"))).ToLowerInvariant() == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "framework SHA256 adapter matches canonical fingerprint");
+            using (var stream = new MemoryStream(new byte[] { 1, 2, 3, 4 })) {
+                byte[] buffer = new byte[6]; Compat.ReadExactly(stream, buffer, 1, 4);
+                Check(buffer[0] == 0 && buffer[1] == 1 && buffer[4] == 4 && buffer[5] == 0, "framework binary adapter fills only requested buffer region");
+                Throws(() => Compat.ReadExactly(stream, buffer, 0, 1), "truncated binary adapter input fails clearly");
+            }
             using var json = JsonDocument.Parse(JsonSerializer.Serialize(new { schema = 1, request_id = request, session_id = session, token = "secret", selection = new { include_ids = new[] { "9223372036854775806", "17", "17" } } }));
             var value = json.RootElement;
             Check(Protocol.Authenticated(value, "secret", session), "matching session");
@@ -139,7 +163,7 @@ static class ProtocolTests
                 Check(TextureLookup.Exact(oldConcrete, modelFolder, new[] { native, x86 }, out ambiguous) == null && ambiguous, "conflicting exact library copies are not guessed");
             } finally {
                 // Delete only this uniquely named fixture below the caller-approved output directory.
-                if (!Path.GetFullPath(textureRoot).StartsWith(Path.TrimEndingDirectorySeparator(root) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) throw new IOException("Unsafe fixture cleanup path");
+                if (!Path.GetFullPath(textureRoot).StartsWith(Compat.TrimSeparator(root) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) throw new IOException("Unsafe fixture cleanup path");
                 foreach (string fixtureFile in Directory.GetFiles(textureRoot, "*", SearchOption.AllDirectories)) File.Delete(fixtureFile);
                 foreach (string fixtureDir in Directory.GetDirectories(textureRoot, "*", SearchOption.AllDirectories).OrderByDescending(p => p.Length)) Directory.Delete(fixtureDir);
                 Directory.Delete(textureRoot);

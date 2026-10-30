@@ -59,7 +59,13 @@ result = import_result(first_usd, source_path='fixture.rvt')
 identity = result['import_id']
 instances = [obj for obj in bpy.data.objects if obj.get(OWNER) == identity and 'revit:id' in obj]
 assert len(instances) == 3
-assert len({obj.instance_collection for obj in instances}) == 2
+assert all(obj.type == 'MESH' for obj in instances)
+assert len({obj.data for obj in instances}) == 2
+window = next(obj for obj in instances if obj['revit:id'] == '11')
+duplicate = next(obj for obj in instances if obj['revit:id'] == '12')
+assert window.data is duplicate.data
+window.data.vertices[0].co.x += .125
+assert duplicate.data.vertices[0].co.x == window.data.vertices[0].co.x
 assert sum(obj.matrix_world.determinant() < 0 for obj in instances) == 1
 assert any(image.packed_file for image in bpy.data.images if image.source == 'FILE')
 assert any(material.name.startswith('Fixture facade material') for material in bpy.data.materials)
@@ -117,10 +123,10 @@ runtime._apply_import()
 target_props = target_scene.xivgate_revit_bridge
 assert target_props.result_collection in target_scene.collection.children
 assert target_props.result_collection not in original_scene.collection.children
-props.catalog_source = 'model-a.rvt'; props.source_rvt = 'model-a.rvt'
+props.catalog_source = str((run / 'model-a.rvt').resolve()); props.source_rvt = props.catalog_source
 runtime.STATE.session = SimpleNamespace(source_path='model-b.rvt')
 runtime.STATE.worker = SimpleNamespace(poll=lambda: None)
-with patch.object(runtime, 'begin_scan') as scan:
+with patch.object(runtime, 'begin_scan') as scan, patch.object(runtime, 'source_sha256', return_value='test-only-hash'):
     runtime.begin_export(original_scene)
     scan.assert_called_once_with(original_scene, auto_import=True)
 runtime.STATE.worker = None

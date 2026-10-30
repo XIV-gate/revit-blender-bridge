@@ -11,7 +11,7 @@ using Autodesk.Revit.DB.Events;
 
 namespace XIVgate.RevitBridge;
 
-public sealed class WorkerApp : IExternalApplication
+internal sealed class WorkerImplementation : IExternalApplication
 {
     string root = "", token = "";
     string? session;
@@ -32,8 +32,8 @@ public sealed class WorkerApp : IExternalApplication
     RequestWake? requestWake;
     sealed class RequestEventHandler : IExternalEventHandler
     {
-        readonly WorkerApp owner;
-        public RequestEventHandler(WorkerApp owner) { this.owner = owner; }
+        readonly WorkerImplementation owner;
+        public RequestEventHandler(WorkerImplementation owner) { this.owner = owner; }
         public string GetName() => "XIVgate Revit Blender Bridge requests";
         public void Execute(UIApplication app)
         {
@@ -50,10 +50,10 @@ public sealed class WorkerApp : IExternalApplication
         string stage = "validate_job_root";
         try {
             root = Path.GetFullPath(job);
-            if (!Path.IsPathFullyQualified(job) || !Directory.Exists(root)) throw new IOException("Рабочий каталог Revit не существует или задан относительным путём.");
+            if (!Compat.FullyQualified(job) || !Directory.Exists(root)) throw new IOException("Рабочий каталог Revit не существует или задан относительным путём.");
             Protocol.Below(root, Path.Combine(root, "request.json"));
             rootValidated = true;
-            Log("Worker bootstrap entered; process " + Environment.ProcessId);
+            Log("Worker bootstrap entered; process " + Compat.ProcessId);
             token = secret;
             stage = "validate_session";
             session = Environment.GetEnvironmentVariable("XIVGATE_RBB_SESSION_ID");
@@ -92,7 +92,7 @@ public sealed class WorkerApp : IExternalApplication
             if (rootValidated) {
                 Log("Worker startup failure at " + stage + ": " + ex);
                 try {
-                    Protocol.Atomic(Path.Combine(root, "startup_error.json"), new { schema = 1, session_id = session, request_id = Protocol.String(active, "request_id"), stage, error = ex.ToString(), process_id = Environment.ProcessId, utc = DateTime.UtcNow.ToString("O") });
+                    Protocol.Atomic(Path.Combine(root, "startup_error.json"), new { schema = 1, session_id = session, request_id = Protocol.String(active, "request_id"), stage, error = ex.ToString(), process_id = Compat.ProcessId, utc = DateTime.UtcNow.ToString("O") });
                     if (active.ValueKind == JsonValueKind.Object) { Status("error", "Ошибка запуска обработчика Revit: " + ex.Message, 0); Respond(false, error: ex.Message); }
                 } catch (Exception reportingError) { Log("Cannot report startup failure: " + reportingError); }
             }
@@ -180,7 +180,7 @@ public sealed class WorkerApp : IExternalApplication
         warningRecords.Clear();
         CheckCancel(); Status("opening", "Подготовка безопасной копии RVT", 0.02);
         string source = Protocol.String(request, "source_rvt");
-        if (!Path.IsPathFullyQualified(source) || !File.Exists(source) || !string.Equals(Path.GetExtension(source), ".rvt", StringComparison.OrdinalIgnoreCase))
+        if (!Compat.FullyQualified(source) || !File.Exists(source) || !string.Equals(Path.GetExtension(source), ".rvt", StringComparison.OrdinalIgnoreCase))
             throw new IOException("Не найден исходный файл RVT.");
         string copy = Protocol.Below(Path.Combine(root, "input"), Protocol.String(request, "source_copy"));
         if (string.Equals(Path.GetFullPath(source), copy, StringComparison.OrdinalIgnoreCase)) throw new IOException("Копия совпадает с исходным RVT.");
@@ -190,7 +190,7 @@ public sealed class WorkerApp : IExternalApplication
         using (var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read))
         using (var output = new FileStream(copy, FileMode.CreateNew, FileAccess.Write, FileShare.None)) input.CopyTo(output);
         original = Path.GetFullPath(source);
-        using (var hashInput = File.OpenRead(copy)) originalHash = Convert.ToHexString(SHA256.HashData(hashInput)).ToLowerInvariant();
+        using (var hashInput = File.OpenRead(copy)) originalHash = Compat.Hex(Compat.Sha256(hashInput)).ToLowerInvariant();
         using var info = BasicFileInfo.Extract(copy);
         sourceVersion = info.Format;
         if (info.IsSavedInLaterVersion) throw new IOException("Модель создана в более новой версии Revit.");
@@ -245,9 +245,12 @@ public sealed class WorkerApp : IExternalApplication
             // Include model categories even when currently hidden or lacking a bounding box.
             if (e is View || e is Material || e is GraphicsStyle) continue;
             var (recommendation, reason) = Recommend(e);
-            string typeName = document.GetElement(e.GetTypeId())?.Name ?? "";
+            var elementType = document.GetElement(e.GetTypeId());
+            string typeName = elementType?.Name ?? "";
+            string familyName = FamilyName(e, elementType);
+            var (bboxMin, bboxMax) = WorldBounds(e);
             rows.Add(new CatalogRow(e.Id.Value.ToString(), e.UniqueId, e.Name, e.Category.Id.Value.ToString(), e.Category.Name,
-                e.WorksetId.IntegerValue.ToString(), Workset(e), e.GetTypeId().Value.ToString(), typeName, recommendation, reason));
+                e.WorksetId.IntegerValue.ToString(), Workset(e), e.GetTypeId().Value.ToString(), typeName, familyName, bboxMin, bboxMax, recommendation, reason));
         }
         string catalog = Protocol.Below(root, Path.Combine(root, "catalog.json"));
         scanWarnings.Clear(); scanWarnings.AddRange(warnings);
@@ -415,5 +418,38 @@ public sealed class WorkerApp : IExternalApplication
     void Respond(bool success, string? catalogPath = null, string? manifestPath = null, string? error = null) => Protocol.Atomic(Path.Combine(root, "response.json"),
         new { schema = 1, session_id = session, request_id = Protocol.String(active, "request_id"), success, action = Protocol.String(active, "action"), catalog_path = catalogPath, manifest_path = manifestPath, warnings_report_path = File.Exists(Path.Combine(root, "warnings.json")) ? Path.Combine(root, "warnings.json") : null, error, warnings });
     void Log(string message) { try { File.AppendAllText(Path.Combine(root, "worker.log"), DateTime.UtcNow.ToString("O") + " " + message + Environment.NewLine); } catch { } }
-    sealed record CatalogRow(string id, string unique_id, string name, string category_id, string category_name, string workset_id, string workset_name, string type_id, string type_name, string recommendation, string reason);
+    static string FamilyName(Element element, Element? elementType)
+    {
+        try {
+            if (element is FamilyInstance instance) {
+                string? name = instance.Symbol?.Family?.Name;
+                if (name != null) return name;
+            }
+        } catch { }
+        try { return (elementType as ElementType)?.FamilyName ?? ""; }
+        catch { return ""; }
+    }
+    static (double[]?, double[]?) WorldBounds(Element element)
+    {
+        try {
+            using var box = element.get_BoundingBox(null);
+            if (box == null) return (null, null);
+            XYZ low = box.Min, high = box.Max;
+            var transform = box.Transform;
+            double[] minimum = { double.PositiveInfinity, double.PositiveInfinity, double.PositiveInfinity };
+            double[] maximum = { double.NegativeInfinity, double.NegativeInfinity, double.NegativeInfinity };
+            for (int corner = 0; corner < 8; corner++) {
+                var point = transform.OfPoint(new XYZ((corner & 1) == 0 ? low.X : high.X, (corner & 2) == 0 ? low.Y : high.Y, (corner & 4) == 0 ? low.Z : high.Z));
+                double[] values = { point.X * 0.3048, point.Y * 0.3048, point.Z * 0.3048 };
+                for (int axis = 0; axis < 3; axis++) {
+                    if (!Compat.Finite(values[axis])) return (null, null);
+                    minimum[axis] = Math.Min(minimum[axis], values[axis]);
+                    maximum[axis] = Math.Max(maximum[axis], values[axis]);
+                }
+            }
+            return (minimum, maximum);
+        } catch { return (null, null); }
+    }
+    sealed record CatalogRow(string id, string unique_id, string name, string category_id, string category_name, string workset_id, string workset_name, string type_id, string type_name,
+        string family_name, double[]? bbox_min, double[]? bbox_max, string recommendation, string reason);
 }

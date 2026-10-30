@@ -31,7 +31,8 @@ def write_fixture(root, include_ids=None):
     # One-pixel PNG, used solely to verify texture packaging.
     image = root / 'pixel.png'
     image.write_bytes(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aRZkAAAAASUVORK5CYII='))
-    manifest = {'schema': 1, 'units': 'metres', 'up': 'Z', 'prototypes': prototypes, 'occurrences': occurrences,
+    manifest = {'schema': 1, 'units': 'metres', 'up': 'Z', 'cache_reusable': True, 'cache_dependencies': [],
+        'prototypes': prototypes, 'occurrences': occurrences,
         'materials': {'7': {'id': 7, 'source_material_id': 'source-7', 'name': 'Fixture facade material', 'color': [0.7, 0.5, 0.3],
                           'transparency': 0, 'smoothness': 35, 'properties': {}, 'base_texture': 'pixel.png'}},
         'summary': {'occurrences': len(occurrences), 'prototypes': len(prototypes)}, 'warnings': []}

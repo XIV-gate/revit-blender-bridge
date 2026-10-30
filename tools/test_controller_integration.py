@@ -22,8 +22,11 @@ from xivgate_revit_bridge.core.jobs import atomic_write_json, read_json
 class TestWorker:
     """Only Revit I/O is simulated; conversion is a real bundled Python subprocess."""
     pid = None
+    started_executables = []
+    export_requests = []
 
     def start(self, exe, directory, token, extra_env=None):
+        self.started_executables.append(str(exe))
         self.directory = Path(directory)
         self.pid = 123456
         self.last = None
@@ -44,6 +47,7 @@ class TestWorker:
                 atomic_write_json(catalog, dict(schema=1, elements=elements, warnings=[]))
                 response['catalog_path'] = str(catalog)
             elif request['action'] == 'export':
+                self.export_requests.append(tuple(request['selection']['include_ids']))
                 manifest = write_fixture(output, set(request['selection']['include_ids']))
                 response['manifest_path'] = str(manifest)
             atomic_write_json(self.directory / 'response.json', response)
@@ -72,6 +76,7 @@ dll = WORK / 'test-worker.dll'; dll.write_bytes(b'test double')
 pointer = WORK / 'test.addin'; pointer.write_text('test-only')
 props.source_rvt = str(source); props.revit_exe = str(exe); props.cache_directory = str(WORK / 'jobs')
 with patch.object(runtime, 'WorkerProcess', TestWorker), patch.object(runtime, 'worker_path', return_value=dll), \
+        patch.object(runtime, 'inspect_revit', return_value=dict(key='2027', year=2027)), \
         patch.object(runtime, 'setup_plan', return_value=dict(path=str(pointer), content='test-only')), \
         patch.object(runtime, 'manifest_matches', return_value=True):
     runtime.begin_scan(scene)
@@ -89,9 +94,19 @@ with patch.object(runtime, 'WorkerProcess', TestWorker), patch.object(runtime, '
     runtime.begin_export(scene)
     wait_ready()
     assert props.result_placements == 1 and props.origin_valid
+    assert len(TestWorker.export_requests) == 1, 'Subset removal must not export or convert again'
+    other_install = WORK / 'another-revit-installation'
+    other_install.mkdir()
+    other_exe = other_install / 'Revit.exe'; other_exe.write_bytes(b'explicit worker double')
+    props.revit_exe = str(other_exe)
+    runtime.begin_export(scene)
+    wait_ready()
+    assert TestWorker.started_executables[-1] == str(other_exe)
+    assert len(TestWorker.started_executables) == 2
+    assert props.result_placements == 1
 assert source.read_bytes() == b'explicit test double, not a Revit document'
 xivgate_revit_bridge.unregister()
 report = dict(status='passed', blender=bpy.app.version_string, real_converter_subprocess=True,
-              catalog_selection=True, selective_reimport=True, scene_binding=True, revit_io='test double')
+              catalog_selection=True, selective_reimport=True, scene_binding=True, changed_revit_restarts_worker=True, revit_io='test double')
 (WORK / 'result.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
 print('XIVGATE_CONTROLLER ' + json.dumps(report))

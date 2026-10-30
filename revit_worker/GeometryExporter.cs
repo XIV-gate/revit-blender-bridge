@@ -26,9 +26,13 @@ internal sealed class GeometryExporter : IPhotoRenderContext
     readonly Dictionary<string, long> materialSignatures = new();
     readonly HashSet<long> exported = new();
     readonly Dictionary<long, long> childOwners = new();
+    readonly Dictionary<long, HashSet<long>> ownerAncestors = new();
     readonly Dictionary<long, Piece> pieces = new();
     readonly FileStream spool;
     readonly Dictionary<string, string?> textureCache = new(StringComparer.OrdinalIgnoreCase);
+    sealed record CacheDependency(string path, string sha256, long size);
+    readonly SortedDictionary<string, CacheDependency> cacheDependencies = new(StringComparer.OrdinalIgnoreCase);
+    bool unresolvedTextures;
     List<string>? textureFiles;
     long material = -1, triangles;
     sealed class Piece
@@ -67,7 +71,15 @@ internal sealed class GeometryExporter : IPhotoRenderContext
                 else if (e is Autodesk.Revit.DB.Architecture.Railing railing) children = railing.GetHandRails().Concat(new[] { railing.TopRail });
                 else if (e is Autodesk.Revit.DB.Architecture.Stairs stairs) children = stairs.GetStairsRuns().Concat(stairs.GetStairsLandings()).Concat(stairs.GetStairsSupports());
                 foreach (var child in children) {
-                    if (child == ElementId.InvalidElementId || selection.Contains(child.Value)) continue;
+                    if (child == ElementId.InvalidElementId) continue;
+                    // A selected child owns its own mesh, yet deselecting it while keeping this
+                    // selected ancestor changes the ancestor's geometry on the next Revit export.
+                    // Record that selection dependency before the independent-ownership stop.
+                    if (child.Value != owner) {
+                        if (!ownerAncestors.TryGetValue(child.Value, out var ancestors)) ownerAncestors.Add(child.Value, ancestors = new HashSet<long>());
+                        ancestors.Add(owner);
+                    }
+                    if (selection.Contains(child.Value)) continue;
                     if (!childOwners.ContainsKey(child.Value)) childOwners.Add(child.Value, owner);
                     queue.Enqueue(child);
                 }
@@ -113,7 +125,11 @@ internal sealed class GeometryExporter : IPhotoRenderContext
             long bytes = data.BaseStream.Position;
             // Close binary before making the terminal manifest visible to a consumer.
             data.Dispose();
+            bool externalReferences;
+            try { externalReferences = ExternalFileUtils.GetAllExternalFileReferences(doc).Count > 0; }
+            catch (Exception ex) { externalReferences = true; warnings.Add("Невозможно подтвердить отсутствие внешних зависимостей для кэша: " + ex.Message); }
             var result = new { schema = 1, units = "metres", up = "Z", source, layout = "triangle_soup_float32_position_normal_uv_then_int64_material_per_triangle",
+                cache_dependencies = context.cacheDependencies.Values.ToArray(), cache_reusable = !context.unresolvedTextures && !externalReferences,
                 summary = new { occurrences = context.occurrences.Count, prototypes = context.prototypes.Count, triangles = context.triangles, materials = context.materials.Count, bytes },
                 prototypes = context.prototypes, occurrences = context.occurrences, materials = context.materials, warnings };
             // Directory is a new revision and never reused; only the manifest is promoted last.
@@ -186,11 +202,11 @@ internal sealed class GeometryExporter : IPhotoRenderContext
             int position = 0;
             foreach (var segment in p.Segments) {
                 spool.Position = segment.Offset;
-                spool.ReadExactly(bytes.AsSpan(position, segment.Bytes));
+                Compat.ReadExactly(spool, bytes, position, segment.Bytes);
                 position += segment.Bytes;
             }
             if (position != bytes.Length) throw new InvalidDataException("Нарушена длина буфера геометрии.");
-            string hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+            string hash = Compat.Hex(Compat.Sha256(bytes)).ToLowerInvariant();
             if (!hashes.TryGetValue(hash, out int prototype)) {
                 prototype = prototypes.Count; hashes.Add(hash, prototype);
                 long offset = binary.BaseStream.Position; binary.Write(bytes);
@@ -198,8 +214,10 @@ internal sealed class GeometryExporter : IPhotoRenderContext
             }
             var t = p.Transform; var e = p.Element;
             occurrences.Add(new { id = e.Id.Value.ToString(), unique_id = e.UniqueId, name = e.Name,
-                category = e.Category?.Name ?? "", category_id = e.Category?.Id.Value.ToString() ?? "", workset = WorkerApp.Workset(e), workset_id = e.WorksetId.IntegerValue.ToString(),
-                type_id = e.GetTypeId().Value.ToString(), type_name = doc.GetElement(e.GetTypeId())?.Name ?? "", parent_id = p.ParentId, source_element_ids = p.SourceIds.OrderBy(x => x).ToArray(),
+                category = e.Category?.Name ?? "", category_id = e.Category?.Id.Value.ToString() ?? "", workset = WorkerImplementation.Workset(e), workset_id = e.WorksetId.IntegerValue.ToString(),
+                type_id = e.GetTypeId().Value.ToString(), type_name = doc.GetElement(e.GetTypeId())?.Name ?? "", parent_id = p.ParentId,
+                selection_parent_ids = ownerAncestors.TryGetValue(e.Id.Value, out var selectedAncestors) ? selectedAncestors.OrderBy(id => id).Select(id => id.ToString()).ToArray() : Array.Empty<string>(),
+                source_element_ids = p.SourceIds.OrderBy(x => x).ToArray(),
                 decision = "include", prototype,
                 transform = new[] { t.BasisX.X, t.BasisX.Y, t.BasisX.Z, t.BasisY.X, t.BasisY.Y, t.BasisY.Z, t.BasisZ.X, t.BasisZ.Y, t.BasisZ.Z, t.Origin.X * 0.3048, t.Origin.Y * 0.3048, t.Origin.Z * 0.3048 } });
             triangles += p.Triangles; exported.Add(e.Id.Value);
@@ -233,7 +251,7 @@ internal sealed class GeometryExporter : IPhotoRenderContext
                 normal = normal.GetLength() > 1e-15 ? normal.Normalize() : XYZ.BasisZ;
                 UV uv = uvs.Count > i ? uvs[i] : new UV(0, 0);
                 foreach (double c in new[] { v.X * 0.3048, v.Y * 0.3048, v.Z * 0.3048, normal.X, normal.Y, normal.Z, uv.U, uv.V }) {
-                    if (!double.IsFinite(c) || Math.Abs(c) > float.MaxValue) throw new InvalidDataException("Некорректная координата сетки элемента " + p.Element.Id.Value);
+                    if (!Compat.Finite(c) || Math.Abs(c) > float.MaxValue) throw new InvalidDataException("Некорректная координата сетки элемента " + p.Element.Id.Value);
                     p.Writer.Write((float)c);
                 }
             }
@@ -246,7 +264,7 @@ internal sealed class GeometryExporter : IPhotoRenderContext
         long sourceMaterial = node.MaterialId.Value;
         var m = doc.GetElement(node.MaterialId) as Material;
         var props = new SortedDictionary<string, object>(StringComparer.Ordinal);
-        try { ReadAsset(node.GetAppearance(), "", props, 0); } catch (Exception e) { warnings.Add("Материал " + sourceMaterial + ": " + e.Message); }
+        try { var appearance = node.GetAppearance(); if (appearance != null) ReadAsset(appearance, "", props, 0); } catch (Exception e) { unresolvedTextures = true; warnings.Add("Материал " + sourceMaterial + ": " + e.Message); }
         var color = node.Color;
         double[] rgb = { color.Red / 255.0, color.Green / 255.0, color.Blue / 255.0 };
         string signature = JsonSerializer.Serialize(new { sourceMaterial, rgb, transparency = node.Transparency, smoothness = node.Smoothness, props });
@@ -259,6 +277,7 @@ internal sealed class GeometryExporter : IPhotoRenderContext
                 string? copied = CopyTexture(path);
                 if (copied != null) textures[property.Key] = copied;
             } catch (Exception e) when (e is IOException || e is UnauthorizedAccessException || e is ArgumentException) {
+                unresolvedTextures = true;
                 warnings.Add("Не удалось разрешить текстуру " + path + ": " + e.Message);
             }
         }
@@ -266,7 +285,7 @@ internal sealed class GeometryExporter : IPhotoRenderContext
         if (baseTexture == null && textures.Count == 1 && !new[] { "bump", "normal", "roughness", "cutout", "opacity" }.Any(k => textures.First().Key.Contains(k, StringComparison.OrdinalIgnoreCase))) baseTexture = textures.First().Value;
         materials[material] = new { id = material, source_material_id = sourceMaterial.ToString(), name = m?.Name ?? "Default", color = rgb,
             transparency = node.Transparency, smoothness = node.Smoothness, properties = props, textures, base_texture = baseTexture,
-            signature_sha256 = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(signature))).ToLowerInvariant() };
+            signature_sha256 = Compat.Hex(Compat.Sha256(System.Text.Encoding.UTF8.GetBytes(signature))).ToLowerInvariant() };
     }
     static bool IsTextureProperty(string key, string value) => !string.IsNullOrWhiteSpace(value) &&
         (key.Contains("bitmap", StringComparison.OrdinalIgnoreCase) ||
@@ -278,7 +297,7 @@ internal sealed class GeometryExporter : IPhotoRenderContext
         if (string.IsNullOrWhiteSpace(source)) { textureCache[raw] = null; return null; }
         // No downloads or network searches. Explicit network assets are reported as unavailable.
         if (source.StartsWith("\\\\", StringComparison.Ordinal) || source.Contains("://", StringComparison.Ordinal)) {
-            warnings.Add("Сетевая текстура не скопирована: " + raw); textureCache[raw] = null; return null;
+            unresolvedTextures = true; warnings.Add("Сетевая текстура не скопирована: " + raw); textureCache[raw] = null; return null;
         }
         string[] libraryRoots = {
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonProgramFiles), "Autodesk Shared", "Materials", "Textures"),
@@ -286,7 +305,7 @@ internal sealed class GeometryExporter : IPhotoRenderContext
         };
         string? found = TextureLookup.Exact(source, sourceDirectory, libraryRoots, out bool exactAmbiguous);
         if (exactAmbiguous) {
-            warnings.Add("Различающиеся текстуры в библиотеках по одному точному пути: " + raw); textureCache[raw] = null; return null;
+            unresolvedTextures = true; warnings.Add("Различающиеся текстуры в библиотеках по одному точному пути: " + raw); textureCache[raw] = null; return null;
         }
         if (found == null) {
             if (textureFiles == null) {
@@ -300,20 +319,26 @@ internal sealed class GeometryExporter : IPhotoRenderContext
             found = TextureLookup.UniqueBasename(source, textureFiles.Concat(File.Exists(besideSource) ? new[] { besideSource } : Array.Empty<string>()), out bool basenameAmbiguous);
             if (basenameAmbiguous) warnings.Add("Неоднозначное имя текстуры; требуется исходный путь: " + raw);
         }
-        if (found == null) { warnings.Add("Текстура не найдена: " + raw); textureCache[raw] = null; return null; }
+        if (found == null) { unresolvedTextures = true; warnings.Add("Текстура не найдена: " + raw); textureCache[raw] = null; return null; }
         try {
             using var input = new FileStream(found, FileMode.Open, FileAccess.Read, FileShare.Read);
-            string hash = Convert.ToHexString(SHA256.HashData(input)).ToLowerInvariant(); input.Position = 0;
+            string hash = Compat.Hex(Compat.Sha256(input)).ToLowerInvariant(); input.Position = 0;
+            long size = input.Length;
             string name = hash + Path.GetExtension(found).ToLowerInvariant();
             string folder = Path.Combine(output, "textures"); Directory.CreateDirectory(folder);
             string dest = Path.Combine(folder, name);
             if (!File.Exists(dest)) { using var copy = new FileStream(dest, FileMode.CreateNew, FileAccess.Write); input.CopyTo(copy); }
+            string dependencyPath = Path.GetFullPath(found);
+            if (cacheDependencies.TryGetValue(dependencyPath, out var previous) && previous.sha256 != hash) {
+                unresolvedTextures = true; warnings.Add("Текстура изменилась во время экспорта; повторное использование кэша отключено: " + dependencyPath);
+            }
+            cacheDependencies[dependencyPath] = new CacheDependency(dependencyPath, hash, size);
             string relative = "textures/" + name; textureCache[raw] = relative; return relative;
-        } catch (Exception e) { warnings.Add("Не удалось скопировать текстуру " + raw + ": " + e.Message); textureCache[raw] = null; return null; }
+        } catch (Exception e) { unresolvedTextures = true; warnings.Add("Не удалось скопировать текстуру " + raw + ": " + e.Message); textureCache[raw] = null; return null; }
     }
     void ReadAsset(Asset asset, string prefix, SortedDictionary<string, object> props, int depth)
     {
-        if (depth > 8) { warnings.Add("Глубина описания материала ограничена: " + prefix); return; }
+        if (depth > 8) { unresolvedTextures = true; warnings.Add("Глубина описания материала ограничена: " + prefix); return; }
         for (int i = 0; i < asset.Size; i++) {
             var p = asset[i]; string key = prefix + p.Name;
             try {
@@ -324,7 +349,7 @@ internal sealed class GeometryExporter : IPhotoRenderContext
                 else if (p is AssetPropertyBoolean b) props[key] = b.Value;
                 else if (p is AssetPropertyInteger integer) props[key] = integer.Value;
                 for (int j = 0; j < p.NumberOfConnectedProperties; j++) if (p.GetConnectedProperty(j) is Asset child) ReadAsset(child, key + "/" + j + "/", props, depth + 1);
-            } catch (Exception e) { warnings.Add("Свойство материала " + key + ": " + e.Message); }
+            } catch (Exception e) { unresolvedTextures = true; warnings.Add("Свойство материала " + key + ": " + e.Message); }
         }
     }
 }

@@ -7,6 +7,14 @@ import os
 import secrets
 import uuid
 
+JOB_MARKER = '.agr_revit_bridge_job.json'
+FINISH_MARKER = '.agr_revit_bridge_finished.json'
+JOB_PACKAGE_ID = 'xivgate_revit_bridge'
+
+
+def job_identity(session_id):
+    return {'schema': 1, 'package_id': JOB_PACKAGE_ID, 'session_id': session_id}
+
 
 def contained_path(root, value):
     root = Path(root).resolve()
@@ -54,6 +62,7 @@ class JobSession:
         self.source_path = ''
         self.source_copy = ''
         self.request_id = None
+        self.finished = False
 
     @classmethod
     def create(cls, work_root):
@@ -64,9 +73,12 @@ class JobSession:
         directory.mkdir()
         contained_path(directory, 'input').mkdir()
         contained_path(directory, 'output').mkdir()
+        atomic_write_json(contained_path(directory, JOB_MARKER), job_identity(session_id))
         return cls(directory, session_id, secrets.token_urlsafe(32))
 
     def request(self, action, source_rvt='', selection_ids=(), options=None):
+        if self.finished or contained_path(self.directory, FINISH_MARKER).exists():
+            raise ValueError('Сеанс завершён; для новой операции создайте новое задание')
         if action not in ('scan', 'export', 'shutdown'):
             raise ValueError('Неизвестное действие задания')
         source = self.source_path
@@ -126,3 +138,17 @@ class JobSession:
         payload = {'schema': 1, 'session_id': self.session_id, 'request_id': request_id, 'token': self.token}
         atomic_write_json(contained_path(self.directory, 'cancel.json'), payload)
         return payload
+
+    def finish(self):
+        """Mark an idle session after its owned worker has exited (caller checks it)."""
+        identity = job_identity(self.session_id)
+        if (self.directory.name != self.session_id or str(uuid.UUID(self.session_id)) != self.session_id
+                or read_json(contained_path(self.directory, JOB_MARKER)) != identity):
+            raise ValueError('Нельзя завершить задание без подтверждённого маркера AGR')
+        marker = contained_path(self.directory, FINISH_MARKER)
+        if marker.exists() and read_json(marker) != identity:
+            raise ValueError('Маркер завершения не принадлежит этому заданию')
+        if not marker.exists():
+            atomic_write_json(marker, identity)
+        self.finished = True
+        return marker

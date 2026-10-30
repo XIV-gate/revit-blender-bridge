@@ -17,7 +17,9 @@ def main():
     if root.drive.casefold() != 'd:' or not root.is_dir():
         raise ValueError('Choose an approved existing task workspace on D:')
     source = Path(__file__).resolve().parents[1]
-    profile = root / ('profile_' + Path(args.blender).parent.name.replace(' ', '_'))
+    # Each invocation gets a fresh install root: retained immutable DLLs from a
+    # previous synthetic release must never contaminate a later package test.
+    profile = root / ('profile_' + Path(args.blender).parent.name.replace(' ', '_') + '_' + str(os.getpid()))
     env = os.environ.copy()
     for variable, folder in (('BLENDER_USER_CONFIG', 'config'), ('BLENDER_USER_SCRIPTS', 'scripts'),
                              ('BLENDER_USER_DATAFILES', 'datafiles'), ('BLENDER_USER_EXTENSIONS', 'extensions'),

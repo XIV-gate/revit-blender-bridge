@@ -13,6 +13,31 @@ from .core.catalog import initial_selection
 
 
 _SYNCING = False
+_RELEASE_ITEMS = []
+
+
+def release_items(self, context):
+    global _RELEASE_ITEMS
+    values = [(info['version'], info['version'] + (' · установлена' if info['version'] == updater.current_version() else ''),
+               info['release_url']) for info in updater.visible_releases(self.release_channel)]
+    # Blender retains references to callback strings; keep them alive between draws.
+    if values != _RELEASE_ITEMS:
+        _RELEASE_ITEMS = values
+    return _RELEASE_ITEMS or [('NONE', 'Нет версий — получите список', '')]
+
+
+def release_changed(self, context):
+    if not updater.STATE.busy:
+        updater.select_channel(self.release_channel)
+        updater.select_release(self.release_version)
+
+
+def channel_changed(self, context):
+    if not updater.STATE.busy:
+        updater.select_channel(self.release_channel)
+        choices = updater.visible_releases()
+        if choices:
+            self.release_version = choices[0]['version']
 
 
 def _props(item):
@@ -86,15 +111,15 @@ class RBB_Warning(bpy.types.PropertyGroup):
 
 
 def _default_revit():
-    root = os.environ.get('ProgramW6432') or os.environ.get('PROGRAMFILES')
-    if root:
-        path = Path(root) / 'Autodesk' / 'Revit 2027' / 'Revit.exe'
-        if path.is_file():
-            return str(path)
-    return ''
+    from .core.revit_versions import discover
+    found = discover()
+    return found[0]['path'] if found else ''
 
 
 class RBB_Settings(bpy.types.PropertyGroup):
+    release_channel: EnumProperty(name='Канал', items=[('stable', 'Стабильные', 'Обычные опубликованные релизы'),
+        ('early', 'Ранний доступ', 'Тестовые сборки, возможны ошибки')], default='stable', update=channel_changed)
+    release_version: EnumProperty(name='Версия', items=release_items, update=release_changed, options={'SKIP_SAVE'})
     source_rvt: StringProperty(name='Файл RVT', subtype='FILE_PATH')
     revit_exe: StringProperty(name='Revit.exe', subtype='FILE_PATH', default=_default_revit())
     cache_directory: StringProperty(name='Рабочая папка', subtype='DIR_PATH', description='Папка для рабочей копии RVT, геометрии и журналов')
@@ -122,6 +147,7 @@ class RBB_Settings(bpy.types.PropertyGroup):
     progress: FloatProperty(min=0, max=1, default=0)
     import_id: StringProperty()
     import_source: StringProperty()
+    import_context_json: StringProperty()
     source_offset_json: StringProperty(default='[0,0,0]')
     origin_valid: BoolProperty(default=False)
     origin_centered: BoolProperty(default=True)
@@ -236,9 +262,10 @@ class RBB_OT_import(bpy.types.Operator):
     bl_idname = 'xivgate_rbb.import_selected'
     bl_label = 'Импортировать выбранное'
     bl_options = {'REGISTER', 'UNDO'}
+    force_refresh: BoolProperty(default=False, options={'SKIP_SAVE'})
     def execute(self, context):
         try:
-            runtime.begin_export(context.scene)
+            runtime.begin_export(context.scene, force_refresh=self.force_refresh)
             return {'FINISHED'}
         except Exception as error:
             self.report({'ERROR'}, str(error))
@@ -299,8 +326,30 @@ class RBB_OT_install_update(bpy.types.Operator):
     bl_idname = 'xivgate_rbb.install_update'
     bl_label = 'Установить обновление'
     bl_description = 'Скачать проверенный релиз AGR с GitHub и загрузить новую версию в этом Blender'
+    def invoke(self, context, event):
+        props = context.scene.xivgate_revit_bridge
+        info = updater.info_for_props(props)
+        if not updater._installable(info):
+            self.report({'ERROR'}, 'Выберите версию для установки')
+            return {'CANCELLED'}
+        self.target_version = info['version']
+        updater.select_channel(props.release_channel)
+        updater.select_release(self.target_version)
+        return context.window_manager.invoke_props_dialog(self, width=560)
+
+    def draw(self, context):
+        info = updater.STATE.info or {}
+        self.layout.label(text=f'Установить AGR Revit Bridge {self.target_version}?')
+        if info.get('channel') == 'early':
+            self.layout.label(text='Ранний доступ: сборка может содержать ошибки.', icon='ERROR')
+        if updater.updates._version(self.target_version) < updater.updates._version(updater.current_version()):
+            self.layout.label(text='Переход на предыдущую версию. Новые функции станут недоступны.', icon='INFO')
+        self.layout.label(text='Рабочий процесс Revit будет закрыт перед установкой.')
+
     def execute(self, context):
         try:
+            if hasattr(self, 'target_version') and (not updater.STATE.info or updater.STATE.info['version'] != self.target_version):
+                raise RuntimeError('Выбранная версия изменилась; повторите установку')
             updater.start_install()
             return {'FINISHED'}
         except Exception as error:
@@ -366,6 +415,8 @@ class RBB_PT_panel(bpy.types.Panel):
             options.prop(props, 'center_model')
             options.prop(props, 'detail_level')
             options.prop(props, 'addin_folder')
+            if props.import_id:
+                options.operator('xivgate_rbb.import_selected', text='Перевыгрузить из Revit', icon='FILE_REFRESH').force_refresh = True
         action = layout.row()
         action.enabled = not runtime.MAINTENANCE and not props.busy and bool(props.catalog_source) and props.selected_count > 0
         action.operator('xivgate_rbb.import_selected', text='Обновить импорт' if props.import_id else 'Импортировать выбранное', icon='IMPORT')
@@ -378,12 +429,20 @@ class RBB_PT_panel(bpy.types.Panel):
         update.label(text='AGR Revit Bridge ' + updater.current_version())
         check = update.row(align=True)
         check.enabled = not updater.STATE.busy
-        check.operator('xivgate_rbb.check_update', icon='FILE_REFRESH')
+        check.operator('xivgate_rbb.check_update', text='Получить версии', icon='FILE_REFRESH')
         check.operator('wm.url_open', text='', icon='URL').url = 'https://github.com/' + updater.updates.REPOSITORY
-        if updater.STATE.info and updater.STATE.info.get('available'):
+        channels = update.column()
+        channels.enabled = not updater.STATE.busy
+        channels.prop(props, 'release_channel', expand=True)
+        if updater.STATE.releases:
+            channels.prop(props, 'release_version')
+        if props.release_channel == 'early':
+            update.label(text='Ранний доступ: возможны ошибки', icon='ERROR')
+        info = updater.info_for_props(props)
+        if updater._installable(info):
             install = update.row()
             install.enabled = not props.busy and not updater.STATE.busy and runtime.STATE.action is None
-            install.operator('xivgate_rbb.install_update', text='Обновить до ' + updater.STATE.info['version'], icon='IMPORT')
+            install.operator('xivgate_rbb.install_update', text='Установить ' + info['version'], icon='IMPORT')
         for line in textwrap.wrap(updater.STATE.message, width=48):
             update.label(text=line)
 

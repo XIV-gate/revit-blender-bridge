@@ -16,16 +16,16 @@ public static class TextureLookup
         ambiguous = false;
         source = source.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
         if (string.IsNullOrWhiteSpace(source)) return null;
-        string direct = Path.IsPathFullyQualified(source) ? source : Path.Combine(sourceDirectory, source);
+        string direct = Compat.FullyQualified(source) ? source : Path.Combine(sourceDirectory, source);
         if (File.Exists(direct)) return Path.GetFullPath(direct);
         string normalized = source.Replace('/', '\\');
         int marker = normalized.IndexOf(Marker, StringComparison.OrdinalIgnoreCase);
-        string? suffix = marker >= 0 ? normalized.Substring(marker + Marker.Length) : !Path.IsPathFullyQualified(source) ? source : null;
+        string? suffix = marker >= 0 ? normalized.Substring(marker + Marker.Length) : !Compat.FullyQualified(source) ? source : null;
         if (string.IsNullOrWhiteSpace(suffix)) return null;
-        suffix = suffix.Replace('\\', Path.DirectorySeparatorChar).Replace('/', Path.DirectorySeparatorChar);
+        suffix = suffix!.Replace('\\', Path.DirectorySeparatorChar).Replace('/', Path.DirectorySeparatorChar);
         var found = new List<string>();
         foreach (string root in libraryRoots) {
-            string prefix = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root)) + Path.DirectorySeparatorChar;
+            string prefix = Compat.TrimSeparator(Path.GetFullPath(root)) + Path.DirectorySeparatorChar;
             string candidate = Path.GetFullPath(Path.Combine(root, suffix));
             if (candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) && File.Exists(candidate)) found.Add(candidate);
         }
@@ -33,7 +33,7 @@ public static class TextureLookup
         if (distinct.Length == 1) return distinct[0];
         if (distinct.Length > 1) {
             // Identical library mirrors are interchangeable; differing files at the exact same suffix are not.
-            var signatures = distinct.Select(path => { using var file = File.OpenRead(path); return Convert.ToHexString(SHA256.HashData(file)); }).Distinct(StringComparer.Ordinal).ToArray();
+            var signatures = distinct.Select(path => { using var file = File.OpenRead(path); return Compat.Hex(Compat.Sha256(file)); }).Distinct(StringComparer.Ordinal).ToArray();
             if (signatures.Length == 1) return distinct[0];
             ambiguous = true;
         }

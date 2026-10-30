@@ -103,3 +103,20 @@ No Preferences were saved. Private drafts remain intentionally rejected.
 
 Repeat the opt-in host check with `--script test_public_update.py --online` on
 `tools/run_blender_test.py`; the flag enables network only for that isolated process.
+
+
+## 0.3.0 candidate
+
+89 pure tests (one Windows symlink-privilege skip). Real worker API reference
+compilation:2024/.NETFramework4.8,2025/2026.NET8,2025/2026.NET10variants,2027.NET10.
+Framework4.8 runtime90assertions; actual.NET8.0.33 and.NET10 each86assertions.
+2025/2026.NET10 use same-year baselineAPIrefs and document CS1701 reference unification.
+Full Revit2024–2026 document open/export has not been run: these hosts are absent.
+
+Isolated Blender4.2.14 and5.2.3: native linked-mesh edits propagate, independent
+copies, mirror transforms, name stability across fullreimports, subset removal,
+foreign-object and shared-scene guards; stable/early selector scene switching;
+upgrade/explicit downgrade/failed-code rollback. All processes use isolated profiles.
+Real user export12108 placements/5203prototypes: import as direct Mesh objects45.917s;
+remove exact72mass/massfloor placements0.419s, retained identities/names unchanged.
+SourceUSD read-only, no user scene or Preferences written.

@@ -11,21 +11,24 @@ import bpy
 
 from .core.catalog import annotate_catalog, initial_selection, selection_by_unique_id
 from .core.installer import manifest_matches
-from .core.jobs import JobSession, read_json
+from .core.jobs import JobSession, read_json, source_sha256
 from .core.launcher import WorkerProcess
+from .core.revit_versions import inspect_revit
 
 
-def worker_path():
+def worker_path(props=None):
     from . import bl_info
     version = '.'.join(map(str, bl_info['version']))
     override = os.environ.get('XIVGATE_RBB_WORKER_DLL')
-    return Path(override) if override else Path(__file__).parent / 'runtime' / 'revit' / '2027' / version / 'XIVgate.RevitBridge.Worker.dll'
+    key = inspect_revit(bpy.path.abspath(props.revit_exe))['key'] if props is not None else '2027'
+    return Path(override) if override else Path(__file__).parent / 'runtime' / 'revit' / key / version / 'XIVgate.RevitBridge.Worker.dll'
 
 
 def setup_plan(props):
     from .core.installer import manifest_plan
     kwargs = {'addin_folder': props.addin_folder} if props.addin_folder else {}
-    return manifest_plan(bpy.path.abspath(props.revit_exe), worker_path(), year=2027, **kwargs)
+    info = inspect_revit(bpy.path.abspath(props.revit_exe))
+    return manifest_plan(info['path'], worker_path(props), year=info['year'], **kwargs)
 
 
 def selected_ids(props):
@@ -61,6 +64,11 @@ class Runtime:
         self.conversion_response = None
         self.converted_usd = None
         self.pending_options = {}
+        self.worker_exe = ''
+        self.pending_context = ''
+        self.pending_selected_ids = None
+        self.scanned_source_hash = ''
+        self.force_refresh = False
 
     @property
     def props(self):
@@ -115,12 +123,11 @@ def begin_scan(scene, *, auto_import=False):
         raise RuntimeError('Локальный Revit требует Windows')
     exe = Path(bpy.path.abspath(props.revit_exe))
     source = Path(bpy.path.abspath(props.source_rvt)).resolve()
-    if not exe.is_file() or exe.name.casefold() != 'revit.exe':
-        raise ValueError('Укажите установленный Revit.exe версии 2027')
+    info = inspect_revit(exe)
     if not source.is_file() or source.suffix.casefold() != '.rvt':
         raise ValueError('Укажите существующий файл RVT')
-    if not worker_path().is_file():
-        raise FileNotFoundError('В комплекте отсутствует обработчик Revit 2027')
+    if not worker_path(props).is_file():
+        raise FileNotFoundError('В комплекте отсутствует обработчик Revit ' + info['key'])
     if not props.cache_directory:
         raise ValueError('Укажите рабочую папку для копии RVT и кэша')
     plan = setup_plan(props)
@@ -128,11 +135,14 @@ def begin_scan(scene, *, auto_import=False):
         raise RuntimeError('Сначала нажмите «Подключить Revit» в этой панели')
     if not manifest_matches(plan):
         raise RuntimeError('Регистрация Revit отличается от этого комплекта; подключите правильный обработчик')
+    if STATE.worker_exe and os.path.normcase(str(exe.resolve())) != STATE.worker_exe:
+        STATE.stop()
     previous = selection_by_unique_id(catalog_from_props(props), selected_ids(props)) if props.catalog_source == str(source) else {}
     if props.import_source and props.import_source != str(source):
         props.import_id = ''
         props.origin_valid = False
     STATE.scene = scene
+    STATE.scanned_source_hash = source_sha256(source)
     STATE.previous_selection = previous
     STATE.auto_import = auto_import
     props.elements.clear()
@@ -152,6 +162,7 @@ def begin_scan(scene, *, auto_import=False):
     if STATE.worker.pid is None or STATE.worker.poll() is not None:
         STATE.worker.start(str(exe), STATE.session.directory, STATE.session.token,
                            extra_env={'XIVGATE_RBB_SESSION_ID': STATE.session.session_id})
+        STATE.worker_exe = os.path.normcase(str(exe.resolve()))
     _timer_start()
 
 
@@ -189,17 +200,42 @@ def _load_catalog(path):
     _message('READY', f'Модель прочитана: {len(props.elements)} элементов. Отметьте нужное.', progress=1)
     if STATE.auto_import:
         STATE.auto_import = False
-        begin_export(STATE.scene)
+        begin_export(STATE.scene, force_refresh=STATE.force_refresh)
 
 
-def begin_export(scene):
+def begin_export(scene, *, force_refresh=False):
     props = scene.xivgate_revit_bridge
     if MAINTENANCE or props.busy or STATE.action is not None:
         raise RuntimeError('Текущее задание ещё не завершено')
     if not props.elements:
         raise RuntimeError('Сначала получите список элементов модели')
+    source = Path(bpy.path.abspath(props.source_rvt)).resolve()
+    if source != Path(props.catalog_source):
+        raise ValueError('Файл RVT изменён в панели; сначала получите новый список')
+    ids = selected_ids(props)
+    if not ids:
+        raise ValueError('Не выбран ни один элемент')
+    STATE.force_refresh = force_refresh
+    source_hash = source_sha256(source)
+    STATE.pending_context = json.dumps(dict(format=2, source=str(source), sha256=source_hash,
+        exe=os.path.normcase(str(Path(bpy.path.abspath(props.revit_exe)).resolve())),
+        detail=props.detail_level, instances=props.preserve_instances, materials=props.import_materials,
+        textures=props.import_textures, pack=props.pack_images, centered=props.center_model), sort_keys=True)
+    STATE.pending_selected_ids = ids
+    if not force_refresh and props.import_id and props.import_context_json == STATE.pending_context:
+        from .blender_import import apply_selection
+        with bpy.context.temp_override(scene=scene, view_layer=scene.view_layers[0]):
+            result = apply_selection(props.import_id, ids)
+        if result is not None:
+            STATE.scene = scene
+            props.result_collection = result['collection']
+            props.result_placements, props.result_prototypes = result['placements'], result['prototypes']
+            _message('DONE', f"Выбор применён без Revit: {result['placements']} размещений, исключено {result['removed']}.", progress=1)
+            return
     if (STATE.session is None or STATE.worker is None or STATE.worker.poll() is not None
-            or STATE.scene != scene or STATE.session.source_path != props.catalog_source):
+            or STATE.scene != scene or STATE.session.source_path != props.catalog_source
+            or STATE.worker_exe != os.path.normcase(str(Path(bpy.path.abspath(props.revit_exe)).resolve()))
+            or STATE.scanned_source_hash != source_hash):
         begin_scan(scene, auto_import=True)
         return
     ids = selected_ids(props)
@@ -261,9 +297,10 @@ def _apply_import():
     with bpy.context.temp_override(scene=STATE.scene, view_layer=STATE.scene.view_layers[0]):
         result = import_result(STATE.converted_usd, import_id=props.import_id or None,
             preserve_instances=STATE.pending_options['preserve_instances'], pack_images=STATE.pending_options['pack_images'],
-            source_path=props.catalog_source)
+            source_path=props.catalog_source, selected_element_ids=STATE.pending_selected_ids)
     props.import_id = result['import_id']
     props.import_source = props.catalog_source
+    props.import_context_json = STATE.pending_context
     props.source_offset_json = json.dumps(result['source_offset'])
     props.origin_valid = True
     props.origin_centered = STATE.pending_options['center_model']
@@ -273,6 +310,7 @@ def _apply_import():
     props.result_prototypes = result['prototypes']
     STATE.action = None
     STATE.converter = None
+    STATE.force_refresh = False
     _message('DONE', f"Импортировано: {result['placements']} размещений, {result['prototypes']} прототипов.", progress=1)
 
 

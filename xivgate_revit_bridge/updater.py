@@ -21,6 +21,9 @@ class UpdateState:
     phase: str = 'IDLE'
     message: str = ''
     info: dict | None = None
+    releases: list = field(default_factory=list)
+    channel: str = 'stable'
+    selected_version: str = ''
     generation: int = 0
     results: queue.Queue = field(default_factory=queue.Queue)
     lock: object = field(default_factory=threading.Lock)
@@ -103,15 +106,46 @@ def start_check(*, fetcher=None):
     STATE.generation += 1
     STATE.info = None
     version = current_version()
-    _set('CHECKING', 'Проверка последнего релиза на GitHub…')
-    _spawn('release', lambda: (fetcher or updates.fetch_release)(version))
+    _set('CHECKING', 'Получение списка релизов GitHub…')
+    _spawn('release', lambda: (fetcher or updates.fetch_releases)(version))
+
+
+def visible_releases(channel=None):
+    return [info for info in STATE.releases if info.get('channel', 'stable') == (channel or STATE.channel)]
+
+
+def info_for_props(props):
+    choices = visible_releases(props.release_channel)
+    return next((info for info in choices if info['version'] == props.release_version), choices[0] if choices else None)
+
+
+def select_release(version):
+    if STATE.busy:
+        raise RuntimeError('Дождитесь завершения операции обновления')
+    STATE.info = next((info for info in visible_releases() if info['version'] == version), None)
+    STATE.selected_version = STATE.info['version'] if STATE.info else ''
+    _redraw()
+
+
+def select_channel(channel):
+    if STATE.busy:
+        raise RuntimeError('Дождитесь завершения операции обновления')
+    if channel not in ('stable', 'early'):
+        raise ValueError('Неизвестный канал релизов')
+    STATE.channel = channel
+    choices = visible_releases()
+    select_release(choices[0]['version'] if choices else '')
+
+
+def _installable(info):
+    return info and info.get('installable', info.get('available', False))
 
 
 def start_install(*, downloader=None):
     if STATE.busy or runtime.MAINTENANCE or runtime.STATE.action is not None:
         raise RuntimeError('Дождитесь завершения текущей операции')
-    if not STATE.info or not STATE.info.get('available'):
-        raise RuntimeError('Сначала проверьте наличие новой версии')
+    if not _installable(STATE.info):
+        raise RuntimeError('Выберите другую опубликованную версию')
     if downloader is None and not online_allowed():
         raise RuntimeError('В Blender отключён доступ в интернет')
     root = Path(__file__).resolve().parent
@@ -223,7 +257,15 @@ def _perform_install():
         _set('INSTALLING', 'Установка проверенного обновления…')
         props = state.scene.xivgate_revit_bridge
         kwargs = {'addin_folder': props.addin_folder} if props.addin_folder else {}
-        plan = manifest_plan(bpy.path.abspath(props.revit_exe), root / state.package.manifest['worker'], **kwargs)
+        key, year = '2027', 2027
+        if props.revit_exe:
+            from .core.revit_versions import inspect_revit
+            selected = inspect_revit(bpy.path.abspath(props.revit_exe))
+            key, year = selected['key'], selected['year']
+        workers = state.package.manifest.get('workers', {'2027': state.package.manifest['worker']})
+        if key not in workers:
+            raise RuntimeError('Выбранный релиз не поддерживает обработчик Revit ' + key)
+        plan = manifest_plan(bpy.path.abspath(props.revit_exe), root / workers[key], year=year, **kwargs)
         registration_path = Path(plan['path'])
         prior_registration = registration_path.read_text(encoding='utf-8-sig') if registration_path.exists() else None
         package_transaction = updates.install_package(state.package, root, state.work)
@@ -299,11 +341,15 @@ def tick():
             if not success:
                 raise RuntimeError(result)
             if kind == 'release':
-                STATE.info = result
-                if result['available']:
-                    _set('AVAILABLE', 'Доступна версия ' + result['version'])
-                else:
-                    _set('CURRENT', 'Установлена актуальная версия ' + current_version())
+                # Single-info fetchers remain supported for isolated integration tests.
+                STATE.releases = result if isinstance(result, list) else [result]
+                STATE.phase = 'AVAILABLE'
+                props = bpy.context.scene.xivgate_revit_bridge
+                select_channel(props.release_channel)
+                if STATE.info:
+                    props.release_version = STATE.info['version']
+                _set('AVAILABLE' if _installable(STATE.info) else 'CURRENT',
+                     f'Релизов: {len(STATE.releases)}. Выберите канал и версию для установки.')
             elif kind == 'package':
                 STATE.package = result
                 _begin_close()
@@ -342,6 +388,9 @@ def cleanup():
         _discard_work(STATE.work, (STATE.info or {}).get('asset_name', 'unused.zip'))
         STATE.phase = 'IDLE'
         STATE.scene = STATE.package = STATE.work = STATE.info = STATE.shutdown_id = None
+        STATE.releases = []
+        STATE.channel = 'stable'
+        STATE.selected_version = ''
         STATE.message = ''
         runtime.MAINTENANCE = False
     if bpy.app.timers.is_registered(tick):

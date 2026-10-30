@@ -10,6 +10,27 @@ from tools.build_package import build
 
 
 class PackageTests(unittest.TestCase):
+    def test_all_worker_variants_and_dependencies_are_verified(self):
+        from xivgate_revit_bridge.core.updates import validate_archive
+        with tempfile.TemporaryDirectory(dir=os.environ['XIVGATE_TEST_ROOT']) as directory:
+            root = Path(directory)
+            workers = {}
+            for key in ('2024', '2025', '2025-net10', '2026', '2026-net10', '2027'):
+                folder = root / key; folder.mkdir()
+                worker = folder / 'XIVgate.RevitBridge.Worker.dll'
+                worker.write_bytes(('test-only-' + key).encode())
+                workers[key] = worker
+            from xivgate_revit_bridge.core.updates import _NET48_DEPENDENCIES
+            for name in _NET48_DEPENDENCIES:
+                (workers['2024'].parent / name).write_bytes(b'dependency-fixture')
+            target = root / 'multi.zip'
+            build(workers, target)
+            with zipfile.ZipFile(target) as archive:
+                manifest = json.loads(archive.read('xivgate_revit_bridge/PACKAGE_MANIFEST.json'))
+            result = validate_archive(target, manifest['version'], (4, 2, 0))
+            self.assertEqual(set(result.manifest['workers']), set(workers))
+            self.assertTrue(any(name.endswith('/System.Text.Json.dll') for name in result.manifest['runtime_files']))
+
     def test_package_manifest_and_versioned_worker_match_every_payload(self):
         with tempfile.TemporaryDirectory(dir=os.environ['XIVGATE_TEST_ROOT']) as directory:
             root = Path(directory)
