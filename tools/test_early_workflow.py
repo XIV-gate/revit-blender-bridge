@@ -94,6 +94,24 @@ props.list_mode = 'types'
 props.type_index = next(index for index, group in enumerate(props.types) if 'Window type' in group.name)
 props.elements[1].selected = False
 props.preview_only_unselected = True
+from xivgate_revit_bridge import ui
+rows, reason = ui.preview_rows(props)
+assert len(rows) == 1 and not reason
+saved_bounds = {row.element_id: row.bbox_json for row in props.elements}
+for row in props.elements:
+    row.bbox_json = ''
+rows, reason = ui.preview_rows(props)
+assert not rows and 'Получить список' in reason
+for row in props.elements:
+    row.bbox_json = saved_bounds[row.element_id]
+props.elements[1].selected = True
+rows, reason = ui.preview_rows(props)
+assert not rows and 'всё отмечено' in reason
+props.preview_only_unselected = False
+rows, reason = ui.preview_rows(props)
+assert len(rows) == 2 and not reason
+props.elements[1].selected = False
+props.preview_only_unselected = True
 assert bpy.ops.xivgate_rbb.preview_bounds() == {'FINISHED'}
 from xivgate_revit_bridge.spatial_preview import PREVIEW_TAG
 preview = [obj for obj in scene.objects if obj.get(PREVIEW_TAG)]

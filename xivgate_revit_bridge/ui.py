@@ -163,7 +163,8 @@ class RBB_Settings(bpy.types.PropertyGroup):
     category_index: IntProperty()
     workset_index: IntProperty()
     type_index: IntProperty()
-    preview_only_unselected: BoolProperty(name='Границы только исключённых', default=True)
+    preview_only_unselected: BoolProperty(name='Рамки только неотмеченных', default=False,
+        description='Ограничить предпросмотр элементами активной строки, у которых снята галочка импорта')
     selected_count: IntProperty()
     busy: BoolProperty(default=False, options={'SKIP_SAVE'})
     status: StringProperty(default='IDLE', options={'SKIP_SAVE'})
@@ -254,7 +255,11 @@ def active_group(props):
         return None
     field, index_field = fields[props.list_mode]
     rows, index = getattr(props, field), getattr(props, index_field)
-    return rows[index] if 0 <= index < len(rows) else None
+    if not 0 <= index < len(rows):
+        return None
+    group = rows[index]
+    query = props.search.casefold().strip()
+    return group if not query or query in group.name.casefold() else None
 
 
 class RBB_OT_toggle_group(bpy.types.Operator):
@@ -535,23 +540,18 @@ class RBB_OT_preview(bpy.types.Operator):
         from .spatial_preview import preview_bounds
         props = context.scene.xivgate_revit_bridge
         try:
-            if not props.origin_valid and props.center_model:
-                raise ValueError('Сначала импортируйте основной набор, чтобы совместить предпросмотр с моделью')
-            if props.list_mode == 'elements':
-                candidates = [props.elements[props.element_index]] if 0 <= props.element_index < len(props.elements) else []
-            else:
-                group, index, kind = {'categories': (props.categories, props.category_index, 'category'),
-                    'worksets': (props.worksets, props.workset_index, 'workset'),
-                    'types': (props.types, props.type_index, 'type')}[props.list_mode]
-                key = group[index].group_id if 0 <= index < len(group) else None
-                candidates = [row for row in props.elements if getattr(row, kind + '_id') == key]
+            candidates, explanation = preview_rows(props)
+            if explanation:
+                self.report({'INFO'}, explanation)
+                return {'CANCELLED'}
             rows = []
             for row in candidates:
                 if row.bbox_json and (not props.preview_only_unselected or not row.selected):
                     minimum, maximum = json.loads(row.bbox_json)
                     rows.append(dict(id=row.element_id, name=row.name, bbox_min=minimum, bbox_max=maximum))
             if not rows:
-                raise ValueError('Нет границ для предпросмотра. Получите новый список или отключите фильтр исключённых.')
+                self.report({'INFO'}, 'Нет доступных рамок для активной строки')
+                return {'CANCELLED'}
             offset = json.loads(props.source_offset_json) if props.origin_valid and props.origin_centered else (0, 0, 0)
             result = preview_bounds(context.scene, rows, offset)
             # Follow a deliberately moved imported root, without changing the user's view.
@@ -565,6 +565,28 @@ class RBB_OT_preview(bpy.types.Operator):
         except Exception as error:
             self.report({'ERROR'}, str(error))
             return {'CANCELLED'}
+
+
+def preview_rows(props):
+    if not props.origin_valid and props.center_model:
+        return [], 'Сначала импортируйте основной набор для совмещения рамок с моделью.'
+    if props.list_mode == 'elements':
+        rows = [props.elements[props.element_index]] if 0 <= props.element_index < len(props.elements) else []
+        rows = [row for row in rows if matches(row, query=props.search, scope_kind=props.scope_kind,
+                                               scope_id=props.scope_id, status=props.selection_filter)]
+    else:
+        group = active_group(props)
+        rows = [row for row in props.elements if group is not None and getattr(row, group.group_kind + '_id') == group.group_id]
+    if not rows:
+        return [], 'Выберите строку в списке выше: рамки показываются для активной строки.'
+    if not any(row.bbox_json for row in rows):
+        return [], 'В этом списке нет данных рамок. Нажмите «Получить список» заново.'
+    if props.preview_only_unselected:
+        rows = [row for row in rows if not row.selected]
+        if not rows:
+            return [], 'В активной строке всё отмечено. Отключите «Рамки только неотмеченных».'
+    rows = [row for row in rows if row.bbox_json]
+    return (rows, '') if rows else ([], 'У неотмеченных элементов нет рамок; получите новый список или отключите фильтр.')
 
 
 class RBB_OT_clear_preview(bpy.types.Operator):
@@ -714,9 +736,16 @@ class RBB_PT_panel(bpy.types.Panel):
                 action.mode, action.scope = mode, 'model'
             selection.label(text=f'Отмечено для импорта: {props.selected_count} из {len(props.elements)}')
             selection.label(text='Это выбор, не число полученных мешей.')
+            selection.label(text='Рамки активной строки списка:')
             selection.prop(props, 'preview_only_unselected')
+            frames, explanation = preview_rows(props)
+            if explanation:
+                for line in textwrap.wrap(explanation, 48):
+                    selection.label(text=line)
             row = selection.row(align=True)
-            row.operator('xivgate_rbb.preview_bounds', text='Границы', icon='SHADING_BBOX')
+            show = row.row(align=True)
+            show.enabled = bool(frames)
+            show.operator('xivgate_rbb.preview_bounds', text=f'Показать рамки ({len(frames)})', icon='SHADING_BBOX')
             row.operator('xivgate_rbb.clear_preview', text='Убрать', icon='X')
         options = layout.column()
         options.enabled = not props.busy and not runtime.MAINTENANCE
