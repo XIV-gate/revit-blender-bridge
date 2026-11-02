@@ -120,6 +120,18 @@ with patch.object(runtime, 'WorkerProcess', TestWorker), patch.object(runtime, '
     assert json.loads(props.import_snapshot_context_json)['sha256'] == expected_hash
     exports, starts = len(TestWorker.export_requests), len(TestWorker.started_executables)
     identity = props.import_id
+    # A scene saved by 0.5.0 carries the old matcher algorithm revision. Same
+    # selection/options must still reconvert, using its verified raw snapshot.
+    legacy_context = json.loads(props.import_context_json)
+    legacy_context['format'] = 3
+    props.import_context_json = json.dumps(legacy_context, sort_keys=True)
+    runtime.begin_export(scene)
+    assert runtime.STATE.action == 'convert', 'Old matcher revision must not use the selection-only no-op'
+    wait_ready()
+    assert json.loads(props.import_context_json)['format'] == 4
+    assert props.import_id == identity and props.result_placements == 3
+    assert props.import_manifest_path == snapshot
+    assert len(TestWorker.export_requests) == exports and len(TestWorker.started_executables) == starts
     for tolerance in (0.2, 0.0):
         props.instance_tolerance_mm = tolerance
         runtime.begin_export(scene)
@@ -150,6 +162,7 @@ xivgate_revit_bridge.unregister()
 report = dict(status='passed', blender=bpy.app.version_string, real_converter_subprocess=True,
               catalog_selection=True, selective_reimport=True, scene_binding=True, changed_revit_restarts_worker=True,
               tolerance_snapshot_reimport_without_revit=True, snapshot_original_sha256=True,
+              legacy_matcher_context_reconverted_without_revit=True,
               general_export_reuse_disabled=True, revit_io='test double')
 (WORK / 'result.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
 print('XIVGATE_CONTROLLER ' + json.dumps(report))

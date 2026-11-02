@@ -28,13 +28,19 @@ for variable in ('BLENDER_USER_CONFIG', 'BLENDER_USER_SCRIPTS', 'BLENDER_USER_DA
 assert WORK.drive.casefold() == 'd:'
 candidate = (WORK / os.environ['RBB_PACKAGE_NAME']).resolve(strict=True)
 legacy_zip = (WORK / os.environ['RBB_LEGACY_PACKAGE_NAME']).resolve(strict=True)
+with zipfile.ZipFile(candidate) as archive:
+    CANDIDATE_VERSION = archive.read('xivgate_revit_bridge/VERSION').decode('utf-8').strip()
+assert re.fullmatch(r'\d+\.\d+\.\d+', CANDIDATE_VERSION), CANDIDATE_VERSION
+CANDIDATE_TUPLE = tuple(map(int, CANDIDATE_VERSION.split('.')))
+FUTURE_VERSION = '.'.join(map(str, (*CANDIDATE_TUPLE[:2], CANDIDATE_TUPLE[2] + 1)))
 run = WORK / ('loader_integration_' + str(os.getpid()))
 run.mkdir()
 backup = run / 'backups'
 backup.mkdir()
 report_path = run / 'result.json'
 report = dict(status='running', blender=bpy.app.version_string, candidate=str(candidate),
-              candidate_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(), legacy_zip=str(legacy_zip))
+              candidate_sha256=hashlib.sha256(candidate.read_bytes()).hexdigest(), legacy_zip=str(legacy_zip),
+              candidate_version=CANDIDATE_VERSION, future_version=FUTURE_VERSION)
 
 
 @contextmanager
@@ -55,7 +61,7 @@ def read_locked(path):
         assert api.CloseHandle(handle), 'Failed to release own test loader handle'
 
 
-def synthetic_future(package, version='0.5.1'):
+def synthetic_future(package, version=FUTURE_VERSION):
     old_version = package.manifest['version']
 
     def remap(name):
@@ -98,13 +104,13 @@ try:
     assert bpy.ops.preferences.addon_install(filepath=str(candidate), overwrite=True) == {'FINISHED'}
     addon_utils.modules_refresh()
     module = addon_utils.enable('xivgate_revit_bridge', default_set=False, persistent=False)
-    assert module is not None and tuple(module.bl_info['version']) == (0, 5, 0)
+    assert module is not None and tuple(module.bl_info['version']) == CANDIDATE_TUPLE
     installed = Path(module.__file__).resolve().parent
     assert installed.is_relative_to(Path(os.environ['BLENDER_USER_SCRIPTS']).resolve())
     updates = importlib.import_module('xivgate_revit_bridge.core.updates')
     loader = importlib.import_module('xivgate_revit_bridge.core.loader')
     installer = importlib.import_module('xivgate_revit_bridge.core.installer')
-    package = updates.validate_archive(candidate, '0.5.0', bpy.app.version[:3])
+    package = updates.validate_archive(candidate, CANDIDATE_VERSION, bpy.app.version[:3])
     original_control = (installed / 'PACKAGE_MANIFEST.json').read_bytes()
     with zipfile.ZipFile(legacy_zip) as archive:
         legacy_source = archive.read('xivgate_revit_bridge/core/updates.py')
@@ -114,7 +120,7 @@ try:
     legacy.__package__ = 'xivgate_revit_bridge.core'
     sys.modules[legacy_name] = legacy  # dataclass inspects its defining module during exec.
     exec(compile(legacy_source, legacy.__file__, 'exec'), legacy.__dict__)
-    old_client_package = legacy.validate_archive(candidate, '0.5.0', bpy.app.version[:3])
+    old_client_package = legacy.validate_archive(candidate, CANDIDATE_VERSION, bpy.app.version[:3])
     assert old_client_package.files['core/loader_payload.py'] == package.files['core/loader_payload.py']
     report['actual_047_client_accepts_literal_loader_payload'] = True
 
@@ -131,8 +137,8 @@ try:
     assert (entry.stat().st_mtime_ns, entry.stat().st_ino) == identities['2027'][:2]
     old_worker = installed / package.manifest['workers']['2027']
     old_worker_hash = hashlib.sha256(old_worker.read_bytes()).hexdigest()
-    assert loader.launch_environment(installed, '2027', '0.5.0') == {
-        'XIVGATE_RBB_WORKER_VERSION': '0.5.0', 'XIVGATE_RBB_WORKER_SHA256': old_worker_hash}
+    assert loader.launch_environment(installed, '2027', CANDIDATE_VERSION) == {
+        'XIVGATE_RBB_WORKER_VERSION': CANDIDATE_VERSION, 'XIVGATE_RBB_WORKER_SHA256': old_worker_hash}
 
     fake_appdata = run / 'FakeAppData'
     plan = installer.manifest_plan('', entry, appdata_root=fake_appdata)
@@ -144,7 +150,7 @@ try:
     assert updates.connect_registration(plan, installed, backup) == manifest_path
     assert manifest_path.stat().st_mtime_ns == registration_mtime
     future_zip = synthetic_future(package)
-    future = updates.validate_archive(future_zip, '0.5.1', bpy.app.version[:3])
+    future = updates.validate_archive(future_zip, FUTURE_VERSION, bpy.app.version[:3])
     expected_new_worker = future.manifest['files'][future.manifest['workers']['2027']]
     assert expected_new_worker != old_worker_hash
 
@@ -153,14 +159,14 @@ try:
         # Match the updater's activation boundary: an explicit later setup action acquires its
         # own OS lock. Rollback safely reacquires it if needed; never recursively acquire it.
         package_transaction.release_lock()
-        assert (installed / 'VERSION').read_text().strip() == '0.5.1'
+        assert (installed / 'VERSION').read_text().strip() == FUTURE_VERSION
         assert hashlib.sha256(old_worker.read_bytes()).hexdigest() == old_worker_hash
         for key, path in paths.items():
             assert loader.ensure_loader(installed, key) == path
             assert (path.stat().st_mtime_ns, path.stat().st_ino,
                     hashlib.sha256(path.read_bytes()).hexdigest()) == identities[key]
-        assert loader.launch_environment(installed, '2027', '0.5.1') == {
-            'XIVGATE_RBB_WORKER_VERSION': '0.5.1', 'XIVGATE_RBB_WORKER_SHA256': expected_new_worker}
+        assert loader.launch_environment(installed, '2027', FUTURE_VERSION) == {
+            'XIVGATE_RBB_WORKER_VERSION': FUTURE_VERSION, 'XIVGATE_RBB_WORKER_SHA256': expected_new_worker}
         assert installer.manifest_matches(plan)
         assert updates.connect_registration(plan, installed, backup) == manifest_path
         assert manifest_path.read_bytes() == registration_bytes and manifest_path.stat().st_mtime_ns == registration_mtime
@@ -176,12 +182,12 @@ try:
         assert manifest_path.read_bytes() == registration_bytes
         package_transaction.rollback()
         package_transaction = None
-        assert (installed / 'VERSION').read_text().strip() == '0.5.0'
+        assert (installed / 'VERSION').read_text().strip() == CANDIDATE_VERSION
         assert (installed / 'PACKAGE_MANIFEST.json').read_bytes() == original_control
         assert all((installed / name).read_bytes() == data for name, data in package.files.items())
         future_runtime = set(future.manifest['workers'].values()) | set(future.manifest['runtime_files'])
         assert not any((installed / name).exists() for name in future_runtime)
-        assert loader.launch_environment(installed, '2027', '0.5.0')['XIVGATE_RBB_WORKER_SHA256'] == old_worker_hash
+        assert loader.launch_environment(installed, '2027', CANDIDATE_VERSION)['XIVGATE_RBB_WORKER_SHA256'] == old_worker_hash
         assert installer.manifest_matches(plan)
         for key, path in paths.items():
             assert (path.stat().st_mtime_ns, path.stat().st_ino,

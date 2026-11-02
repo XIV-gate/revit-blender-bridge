@@ -1,5 +1,40 @@
 # Verification history
 
+## Local 0.5.1 candidate — 2026-11-02
+
+- Reproduced two concrete 0.5.0 misses on an unchanged export: identical untextured
+  glass geometry with different unused UV, and identical geometry translated in
+  mesh-local coordinates. Normalizing comparison frames and compensating the
+  original anchor placement removes both causes without changing source bytes.
+- Actual model: 26,432 placements; 7,993 raw prototypes; 5,123 final 0.5.0 meshes
+  become 4,322 at the same 0.1 mm tolerance. UV-only correction accounts for 370
+  fewer meshes, frame correction for another 431. Pure regrouping takes under
+  one second locally; this excludes USD writing and Blender object creation.
+- Full real-payload USD checks in Blender 5.2.3 and 4.2.14 preserved all placements;
+  maximum world-bounds error was 0.0817 mm. A small real subset was then imported
+  to verify direct shared Mesh objects and UV layers. The full 26,432-object live
+  scene was not reimported or edited during debugging.
+- Selected facade panel is genuinely 7.412 mm shorter than the nearest same-type
+  size variant. At 0.1/1 mm it remains independent; at 5 mm its representative is
+  shared by 21 placements. Increasing tolerance is an intentional approximation.
+- Recommendation audit: 97,943 catalog elements, 71,576 default selections.
+  Exact helper categories and numeric CAD-copy suffix fixes remove 2,551 mistaken
+  defaults, yielding 69,025. Existing unique-ID overrides remain unchanged. No
+  blanket wall/equipment/mass or distance-based exclusions were introduced.
+- Remote study masses match the Revit catalog/raw geometry and the live Blender
+  coordinates within float precision. Their distance is source data, not an
+  import displacement. Local source-origin correction does not move them.
+- Pure suite: 186 tests, one symlink privilege skip. Six 0.5.1 workers compiled
+  against the supported API variants; only assembly version metadata changed in
+  C# relative to 0.5.0. Fresh worker assertions: 125 .NET10 / 129 Framework4.8.
+- Isolated 4.2/5.2 controller tests verify that context format 3 migrates to 4 by
+  reconverting a valid snapshot, with no new Revit start/export. Frame integration
+  covers reflections, nonuniform scaling, native-disabled strict comparison,
+  textured UV preservation and unchanged original buffers.
+- Test copies, profiles and reports remain under the previously approved project
+  Temp directory for reproduction. No publication or live-profile update is part
+  of this diagnostic candidate.
+
 ## Automated evidence
 
 - Host-independent Python: catalog recommendations and manual overrides, authenticated

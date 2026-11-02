@@ -112,18 +112,27 @@ def build_usd(manifest_path, target_path, *, include_materials=True, include_tex
         records_by_id[key] = np.frombuffer(data, dtype=dtype)
     if match_instances:
         from .core.instance_matching import plan_instances
-        instance_plan = plan_instances(occurrences, records_by_id, manifest['materials'],
+        comparison_records = records_by_id
+        centers = None
+        if use_revit_instances:
+            from .core.instance_frames import center_prototypes, compensated_transform
+            comparison_records, centers = center_prototypes(records_by_id)
+        instance_plan = plan_instances(occurrences, comparison_records, manifest['materials'],
             tolerance_mm=instance_tolerance_mm, use_revit=use_revit_instances)
         adjusted = []
         for item in occurrences:
             identifier = str(item['id'])
             signs = instance_plan.get('adjustments', {}).get(identifier, (1, 1, 1))
-            transform = list(item['transform'])
-            # Column world = original world * canonical axis adjustment. The
-            # exported layout stores three column bases followed by translation.
-            for axis, sign in enumerate(signs):
-                transform[axis * 3:axis * 3 + 3] = [sign * value for value in transform[axis * 3:axis * 3 + 3]]
-            adjusted.append(dict(item, prototype=instance_plan['redirects'][identifier], transform=transform))
+            anchor = instance_plan['redirects'][identifier]
+            if centers is not None:
+                # Compare centered geometry, but write the ORIGINAL anchor mesh.
+                # Restore its source pivot through this placement compensation.
+                transform = compensated_transform(item['transform'], centers[int(item['prototype'])], centers[int(anchor)], signs)
+            else:
+                transform = list(item['transform'])
+                for axis, sign in enumerate(signs):
+                    transform[axis * 3:axis * 3 + 3] = [sign * value for value in transform[axis * 3:axis * 3 + 3]]
+            adjusted.append(dict(item, prototype=anchor, transform=transform))
         occurrences = adjusted
         required = instance_plan['representatives']
         instance_statistics = instance_plan['statistics']

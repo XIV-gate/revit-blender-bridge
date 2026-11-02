@@ -393,7 +393,7 @@ def begin_export(scene, *, force_refresh=False):
     source_hash = source_sha256(source)
     STATE.pending_snapshot_context = json.dumps(dict(format='native_family_v1', source=str(source), sha256=source_hash,
         exe=os.path.normcase(str(Path(bpy.path.abspath(props.revit_exe)).resolve())), detail=props.detail_level), sort_keys=True)
-    STATE.pending_context = json.dumps(dict(format=3, source=str(source), sha256=source_hash,
+    STATE.pending_context = json.dumps(dict(format=4, source=str(source), sha256=source_hash,
         exe=os.path.normcase(str(Path(bpy.path.abspath(props.revit_exe)).resolve())),
         detail=props.detail_level, instances=props.preserve_instances, materials=props.import_materials,
         textures=props.import_textures, pack=props.pack_images, centered=props.center_model,

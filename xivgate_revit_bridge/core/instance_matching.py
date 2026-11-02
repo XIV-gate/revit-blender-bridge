@@ -1,8 +1,9 @@
 """Read-only instance grouping in canonical producer coordinates.
 
 Revit identity and sampled surface matching are limited to proven simple,
-untextured family geometry. Fallback matches retain triangle order, materials,
-normals and UVs. Returned axis adjustments never mutate source placements.
+untextured family geometry. Fallback matches retain triangle order, materials
+and normals; UVs are ignored only with explicit material proof and Revit mode.
+Returned axis adjustments never mutate source placements.
 """
 from bisect import bisect_left, bisect_right, insort
 from collections import defaultdict
@@ -118,9 +119,15 @@ def plan_instances(occurrences, prototypes, materials, *, tolerance_mm=0.1, use_
         unique_materials = np.unique(sequence)
         single = int(unique_materials[0]) if len(unique_materials) == 1 else None
         native_material = single if single is not None and not _uv_sensitive(material_metadata.get(str(single))) else None
+        ignore_uv = bool(use_revit and len(unique_materials) and all(
+            isinstance(material_metadata.get(str(int(material))), dict)
+            and material_metadata[str(int(material))].get('uv_sensitive') is False
+            for material in unique_materials))
         info[key] = dict(vertices=vertices, material_sequence=sequence, bounds=bounds, native_material=native_material,
+                         ignore_uv=ignore_uv,
                          fallback=(len(records), hashlib.sha256(sequence.tobytes()).digest()),
-                         attributes=hashlib.sha256(np.ascontiguousarray(vertices[:, :, 3:8]).tobytes()).digest())
+                         attributes=(ignore_uv, hashlib.sha256(np.ascontiguousarray(
+                             vertices[:, :, 3:6 if ignore_uv else 8]).tobytes()).digest()))
 
     native_index = defaultdict(_BoundsIndex)
     fallback_index = defaultdict(_BoundsIndex)
@@ -189,13 +196,14 @@ def plan_instances(occurrences, prototypes, materials, *, tolerance_mm=0.1, use_
                 if not np.array_equal(data['material_sequence'], anchor['material_sequence']):
                     continue
                 first, second = data['vertices'], anchor['vertices']
+                ignore_uv = data['ignore_uv'] and anchor['ignore_uv']
                 if tolerance == 0:
-                    equal = np.array_equal(first, second)
+                    equal = np.array_equal(first[:, :, :6], second[:, :, :6]) if ignore_uv else np.array_equal(first, second)
                 else:
                     difference = np.abs(first.astype(np.float64) - second.astype(np.float64))
                     equal = (np.all(difference[:, :, :3] <= tolerance)
                              and np.all(difference[:, :, 3:6] <= 1e-6)
-                             and np.all(difference[:, :, 6:8] <= 1e-8))
+                             and (ignore_uv or np.all(difference[:, :, 6:8] <= 1e-8)))
                 if equal:
                     representative = candidate
                     stats['tolerant_merges'] += 1

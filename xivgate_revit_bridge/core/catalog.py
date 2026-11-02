@@ -17,14 +17,21 @@ _HELPER_CATEGORIES = frozenset(name.casefold() for name in (
     'Осн. горизонтали', 'Основные горизонтали', 'Доп. горизонтали', 'Дополнительные горизонтали',
     'Границы участков', 'Сведения о проекте', 'Точка съемки', 'Точка съёмки',
     'Базовая точка проекта', 'Внутреннее начало',
+    'Разделитель помещений', 'Эскиз лестницы/пандуса: Граница',
+    'Эскиз лестницы/пандуса: траектория лестницы', 'Ограничения',
+    'Выносные линии траектории ограждения',
     'Rooms', 'Spaces', 'Zones', 'Zone Boundaries', 'Area Boundaries',
     'Legend Components', 'Sketch', 'Sketches', 'Curtain Grids', 'Curtain Grid Lines',
     'Curtain Wall Grids', 'Cameras', 'Material Assets', 'Material Property Sets',
     'Project Information', 'Survey Point', 'Project Base Point', 'Internal Origin',
     'Lines', 'Model Lines', 'Sun Path', 'Sunpath', 'Primary Contours', 'Secondary Contours',
     'Property Lines', 'Site Property Lines',
+    'Room Separation', 'Room Separation Lines', 'Stair/Ramp Sketch: Boundary',
+    'Stair/Ramp Sketch: Stair Path', 'Constraints', 'Railing Path Extension Lines',
 ))
-_CAD_CATEGORY = re.compile(r'\.(?:dwg|dxf)$', re.IGNORECASE)
+# Revit adds a numeric copy suffix to duplicate CAD imports. Arbitrary text
+# after an extension is deliberately not evidence of a CAD category.
+_CAD_CATEGORY = re.compile(r'\.(?:dwg|dxf)(?:[ \t]+\([0-9]+\))?$', re.IGNORECASE)
 
 
 def is_reference_category(name):

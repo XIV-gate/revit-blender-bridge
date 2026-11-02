@@ -27,7 +27,9 @@ for index in range(6):
     record = np.repeat(original, 2 if index == 1 else 1)
     record['material'] = 7 if index in (2, 3) else 8
     if index in (1, 5):
-        record['vertices'][:, :, 0] += .00015
+        # Deform the far corner instead of translating the entire prototype.
+        # Centering halves its .3mm extent difference into .15mm local error.
+        record['vertices'][:, 1, 0] += .0003
     if index in (1, 3):
         record['vertices'][:, :, 6:8] += .125
     records[index] = record
@@ -79,10 +81,21 @@ for tolerance, expected_count in ((.1, 6), (.2, 4), (0, 6)):
     for index, row in enumerate(rows):
         obj = objects[row['id']]
         expected_matrix = Matrix(matrix_rows(row['transform'])).transposed()
-        assert max(abs(obj.matrix_world[r][c] - expected_matrix[r][c]) for r in range(4) for c in range(4)) < 1e-5
+        if expected_redirects[index] == index:
+            assert max(abs(obj.matrix_world[r][c] - expected_matrix[r][c]) for r in range(4) for c in range(4)) < 1e-5
         source = records[expected_redirects[index]]['vertices'].reshape(-1, 8)
         points = np.asarray([tuple(obj.data.vertices[loop.vertex_index].co) for loop in obj.data.loops])
         np.testing.assert_allclose(points, source[:, :3], atol=1e-7, rtol=0)
+        # Compare geometry in world space independently of the converter's
+        # pivot-compensation formula. Native identity may change tessellation,
+        # so compare the actual surface corner sets in both directions.
+        actual_matrix = np.asarray(obj.matrix_world, dtype=np.float64)
+        source_matrix = np.asarray(expected_matrix, dtype=np.float64)
+        world = points @ actual_matrix[:3, :3].T + actual_matrix[:3, 3]
+        original_points = records[index]['vertices'][:, :, :3].reshape(-1, 3)
+        expected_world = original_points @ source_matrix[:3, :3].T + source_matrix[:3, 3]
+        errors = np.max(np.abs(world[:, None] - expected_world[None, :]), axis=2)
+        assert max(errors.min(axis=0).max(), errors.min(axis=1).max()) <= tolerance / 1000 + 1e-5
         uv = np.asarray([tuple(loop.uv) for loop in obj.data.uv_layers.active.data])
         np.testing.assert_allclose(uv, source[:, 6:8], atol=1e-7, rtol=0)
         assert len(obj.data.loops) == len(source) and np.isfinite(uv).all()
@@ -98,7 +111,8 @@ for tolerance, expected_count in ((.1, 6), (.2, 4), (0, 6)):
     reports.append(dict(tolerance_mm=tolerance, unique_meshes=expected_count, statistics=converted['instance_matching']))
 assert bpy.data.objects.get('Cube') is not None
 assert not (Path(os.environ['BLENDER_USER_CONFIG']) / 'userpref.blend').exists()
-report = dict(status='passed', blender=bpy.app.version_string, passes=reports, transforms_unchanged=True,
+report = dict(status='passed', blender=bpy.app.version_string, passes=reports, world_mapping_preserved=True,
+              unmatched_transforms_unchanged=True,
               raw_geometry_restored=True, textured_uv_variants_preserved=True, packed_images_decoded=True)
 (work / 'result.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
 print('AGR_CONVERSION_INSTANCE_MATCHING ' + json.dumps(report), flush=True)

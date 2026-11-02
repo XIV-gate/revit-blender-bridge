@@ -95,6 +95,62 @@ class InstanceMatchingTests(unittest.TestCase):
         self.assertEqual(result['statistics']['native_merges'], 0)
         self.assertEqual(result['statistics']['tolerant_merges'], 1)
 
+    def test_untextured_panel_uv_variants_match_without_native_identity(self):
+        first, second = mesh(triangles=12), mesh(triangles=12)
+        second['vertices'][:, :, 6:8] += .061177254
+        rows = [dict(occurrence(10127461, 4456), native_instance_safe=False),
+                dict(occurrence(11119046, 5675), native_instance_safe=False)]
+        before = second.copy()
+        records = {4456: first, 5675: second}
+        for tolerance in (0, .1):
+            result = self.plan(records, rows, tolerance_mm=tolerance)
+            self.assertEqual(result['representatives'], {4456})
+            self.assertEqual(result['statistics']['native_merges'], 0)
+            self.assertEqual(result['statistics']['surface_comparisons'], 0)
+        self.assertEqual(self.plan(records, rows, use_revit=False)['representatives'], {4456, 5675})
+        for metadata in ({}, {'uv_sensitive': True}, {'uv_sensitive': 0},
+                         {'uv_sensitive': None}, {'base_texture': 'missing.png'}):
+            with self.subTest(metadata=metadata):
+                self.assertEqual(self.plan(records, rows, materials={7: metadata})['representatives'], {4456, 5675})
+        self.assertEqual(self.plan(records, rows, materials={})['representatives'], {4456, 5675})
+        np.testing.assert_array_equal(second, before)
+
+    def test_uv_independence_requires_every_material_and_preserves_geometry_checks(self):
+        first, second = mesh(triangles=2), mesh(triangles=2)
+        first['material'][1] = second['material'][1] = 8
+        second['vertices'][:, :, 6:8] += .2
+        rows = [dict(occurrence(1, 1), native_instance_safe=False),
+                dict(occurrence(2, 2), native_instance_safe=False)]
+        records = {1: first, 2: second}
+        self.assertEqual(self.plan(records, rows, materials={7: {'uv_sensitive': False},
+                         8: {'uv_sensitive': False}})['representatives'], {1})
+        for metadata in ({}, {'uv_sensitive': True}, None):
+            materials = {7: {'uv_sensitive': False}}
+            if metadata is not None:
+                materials[8] = metadata
+            self.assertEqual(self.plan(records, rows, materials=materials)['representatives'], {1, 2})
+        for mutation in ('positions', 'normals', 'order', 'materials', 'type'):
+            changed, changed_rows = second.copy(), copy.deepcopy(rows)
+            if mutation == 'positions': changed['vertices'][0, 0, 0] += .001
+            if mutation == 'normals': changed['vertices'][0, 0, 3] += .001
+            if mutation == 'order': changed['vertices'] = changed['vertices'][:, ::-1]
+            if mutation == 'materials': changed['material'] = [8, 7]
+            if mutation == 'type': changed_rows[1]['type_id'] = 'other'
+            self.assertEqual(self.plan({1: first, 2: changed}, changed_rows,
+                materials={7: {'uv_sensitive': False}, 8: {'uv_sensitive': False}})['representatives'], {1, 2})
+
+    def test_untextured_priority_digest_excludes_irrelevant_uv(self):
+        records, rows = {}, []
+        for key in range(100):
+            records[key] = mesh()
+            records[key]['vertices'][:, :, 3] = key * .001
+            records[key]['vertices'][:, :, 6] += key * .01
+            rows.append(dict(occurrence(key, key), native_instance_safe=False))
+        records[100] = records[90].copy()
+        records[100]['vertices'][:, :, 6] += .5
+        rows.append(dict(occurrence(100, 100), native_instance_safe=False))
+        self.assertEqual(self.plan(records, rows)['redirects']['100'], 90)
+
     def test_missing_or_invalid_type_never_groups_distinct_prototypes(self):
         for type_id in (None, '', '-1', -1, '   '):
             rows = [dict(occurrence(1, 1), type_id=type_id), dict(occurrence(2, 2), type_id=type_id)]
