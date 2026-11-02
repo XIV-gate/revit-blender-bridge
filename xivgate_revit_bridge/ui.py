@@ -279,6 +279,8 @@ class RBB_Settings(bpy.types.PropertyGroup):
     catalog_worker_key: StringProperty()
     addin_folder: StringProperty(name='Каталог подключения Revit', subtype='DIR_PATH', description='Обычно определяется автоматически; нужен только при нестандартной установке')
     preserve_instances: BoolProperty(name='Сохранять инстансы', default=True, description='Редактируемые Mesh-объекты с общими данными, как Alt+D')
+    filter_remote_geometry: BoolProperty(name='Убирать дальние части', default=True,
+        description='Убирать отдельные несвязанные части перекрытий далеко от здания. Основная часть сохраняется. Выключите для восстановления из кэша')
     use_revit_instances: BoolProperty(name='Учитывать данные Revit', default=True, description='Учитывать нативные варианты Revit, разные локальные начала и неиспользуемые UV нетекстурных материалов. Размеры, нормали и текстурные UV проверяются; мировое размещение сохраняется')
     instance_tolerance_mm: FloatProperty(name='Допуск, мм', default=0.1, min=0, max=1000, soft_max=10, precision=4,
         description='Допустимое расхождение геометрии при поиске инстансов. 0 — точное сравнение. Больший допуск объединяет больше близких вариантов; изменение применяется при обновлении импорта из сохранённой выгрузки')
@@ -949,7 +951,7 @@ def draw_settings(layout, props):
     options = layout.box()
     options.label(text='Настройки импорта', icon='IMPORT')
     for field in ('preserve_instances', 'import_materials', 'import_textures',
-                  'pack_images', 'center_model', 'detail_level'):
+                  'pack_images', 'center_model', 'filter_remote_geometry', 'detail_level'):
         options.prop(props, field)
         if field == 'preserve_instances' and props.preserve_instances:
             row = options.column(align=True)

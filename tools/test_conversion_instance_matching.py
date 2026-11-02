@@ -27,9 +27,9 @@ for index in range(6):
     record = np.repeat(original, 2 if index == 1 else 1)
     record['material'] = 7 if index in (2, 3) else 8
     if index in (1, 5):
-        # Deform the far corner instead of translating the entire prototype.
-        # Centering halves its .3mm extent difference into .15mm local error.
-        record['vertices'][:, 1, 0] += .0003
+        # Move one corner out of the original Y=0 plane. This is a real shape
+        # change (not an exact affine resize); centering leaves .15mm error.
+        record['vertices'][:, 1, 1] += .0003
     if index in (1, 3):
         record['vertices'][:, :, 6:8] += .125
     records[index] = record

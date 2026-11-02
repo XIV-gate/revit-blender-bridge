@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import uuid
 
 import bpy
 import numpy as np
@@ -14,7 +15,7 @@ from fixture_cache import write_fixture
 from xivgate_revit_bridge.conversion import build_usd
 from xivgate_revit_bridge.blender_import import import_result, OWNER
 
-work = Path(os.environ['RBB_TEST_ROOT']) / ('frame_integration_' + str(os.getpid()))
+work = Path(os.environ['RBB_TEST_ROOT']) / ('frame_integration_' + str(os.getpid()) + '_' + uuid.uuid4().hex[:8])
 manifest = write_fixture(work)
 data = json.loads(manifest.read_text())
 dtype = np.dtype([('vertices', '<f4', (3, 8)), ('material', '<i8')])

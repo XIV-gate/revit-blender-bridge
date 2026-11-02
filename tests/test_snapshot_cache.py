@@ -11,6 +11,38 @@ from xivgate_revit_bridge.core import export_cache
 from xivgate_revit_bridge.core.jobs import JobSession, JOB_MARKER
 
 
+class SnapshotSubsetTests(unittest.TestCase):
+    def compatible(self, occurrences, current=('keep',), previous=('keep', 'drop')):
+        return export_cache.snapshot_subset_compatible({'occurrences': occurrences}, current, previous)
+
+    def test_independent_subset_and_no_geometry_catalog_ids_are_allowed(self):
+        rows = [dict(id='keep'), dict(id='drop')]
+        self.assertTrue(self.compatible(rows))
+        self.assertTrue(self.compatible(rows, ('keep', 'no-mesh'), ('keep', 'drop', 'no-mesh')))
+        self.assertTrue(self.compatible(rows, ('keep', 'drop')))
+
+    def test_removed_compound_sources_or_selection_parents_require_full_export(self):
+        for metadata in ({'source_element_ids': ['keep', 'drop']},
+                         {'selection_parent_ids': ['keep']}, {'parent_id': 'keep'}):
+            with self.subTest(metadata=metadata):
+                self.assertFalse(self.compatible([dict(id='keep'), dict(id='drop', **metadata)]))
+        self.assertTrue(self.compatible([dict(id='keep'), dict(id='drop',
+            source_element_ids=['drop'], selection_parent_ids=['drop'])]))
+
+    def test_expansion_empty_or_malformed_selection_is_rejected(self):
+        for current, previous in ((('new',), ('keep', 'drop')), ((), ('keep', 'drop')),
+                                  ('keep', ('keep', 'drop')), ((1,), (1, 2)),
+                                  (('keep',), 'keep')):
+            self.assertFalse(self.compatible([dict(id='keep'), dict(id='drop')], current, previous))
+
+    def test_malformed_compound_metadata_is_rejected_conservatively(self):
+        for metadata in ({'source_element_ids': []}, {'source_element_ids': 'keep'},
+                         {'source_element_ids': [1]}, {'selection_parent_ids': 'keep'},
+                         {'selection_parent_ids': [1]}):
+            self.assertFalse(self.compatible([dict(id='keep'), dict(id='drop', **metadata)]))
+        self.assertFalse(export_cache.snapshot_subset_compatible({}, {'keep'}, {'keep', 'drop'}))
+
+
 class SnapshotCacheTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='snapshot-', dir=os.environ['XIVGATE_TEST_ROOT'])

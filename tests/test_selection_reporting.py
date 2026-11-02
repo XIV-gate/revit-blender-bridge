@@ -7,6 +7,64 @@ from xivgate_revit_bridge.core.reporting import report_entries, raw_values
 
 
 class SelectionReportingTests(unittest.TestCase):
+    def spatial_catalog(self, masses, second_building=False):
+        anchors = [dict(id='anchor-' + str(i), category_name=('Windows' if i % 2 else 'Панели витража'),
+                        bbox_min=[0, 0, 0], bbox_max=[10, 10, 10], recommendation='review') for i in range(20)]
+        if second_building:
+            anchors.append(dict(id='building-2', category_name='Curtain Wall Mullions',
+                                bbox_min=[2000, 0, 0], bbox_max=[2010, 10, 10]))
+        return {'elements': anchors + masses}
+
+    def mass(self, identifier='mass', low=(1600, 0, 0), high=(1610, 10, 10), **kwargs):
+        return dict(id=identifier, unique_id='uid-' + identifier, category_name='Формы',
+                    bbox_min=list(low), bbox_max=list(high), recommendation='review', **kwargs)
+
+    def test_spatial_advisory_excludes_only_wholly_distant_review_mass_and_preserves_overrides(self):
+        rows = [self.mass(), self.mass('near', (100, 0, 0), (105, 10, 10)),
+                self.mass('crossing', (-1600, 0, 0), (1600, 10, 10)),
+                dict(self.mass('wall'), category_name='Стены'),
+                dict(self.mass('equipment'), category_name='Оборудование'),
+                dict(self.mass('unknown'), category_name='Unfamiliar category'),
+                dict(self.mass('english-mass'), category_name='Mass'),
+                dict(self.mass('english-forms'), category_name='Forms'),
+                dict(self.mass('mass-floor'), category_name='Формообразующее перекрытие', category_id='-2003403'),
+                dict(self.mass('include'), recommendation='include'),
+                dict(self.mass('excluded'), recommendation='exclude', reason='Исходная причина'),
+                dict(self.mass('localized'), category_name='Other translation', category_id='-2003400')]
+        source = self.spatial_catalog(rows)
+        result = annotate_catalog(source)
+        after = {row['id']: row for row in result['elements']}
+        self.assertEqual(after['mass']['recommendation'], 'exclude')
+        self.assertEqual(after['localized']['recommendation'], 'exclude')
+        self.assertEqual(after['english-mass']['recommendation'], 'exclude')
+        self.assertEqual(after['english-forms']['recommendation'], 'exclude')
+        self.assertIn('100', after['mass']['reason'])
+        self.assertIn('вручную', after['mass']['reason'])
+        for identifier in ('near', 'crossing', 'wall', 'equipment', 'unknown', 'mass-floor'):
+            self.assertEqual(after[identifier]['recommendation'], 'review')
+        self.assertEqual(after['include']['recommendation'], 'include')
+        self.assertEqual(after['excluded']['reason'], 'Исходная причина')
+        self.assertTrue(initial_selection(result, {'uid-mass': True})['mass'])
+        self.assertEqual(source['elements'][20]['recommendation'], 'review')
+
+    def test_spatial_advisory_uses_union_of_buildings_and_scale_aware_margin(self):
+        far_from_first = self.mass('other-building', (2000, 0, 0), (2010, 10, 10))
+        self.assertEqual(annotate_catalog(self.spatial_catalog([far_from_first], True))['elements'][-1]['recommendation'], 'review')
+        catalog = self.spatial_catalog([self.mass('large-site', (1500, 0, 0), (1510, 10, 10))])
+        for anchor in catalog['elements'][:20]:
+            anchor['bbox_max'] = [1000, 10, 10]
+        self.assertEqual(annotate_catalog(catalog)['elements'][-1]['recommendation'], 'review')
+
+    def test_spatial_advisory_requires_twenty_valid_anchors_and_finite_mass_bounds(self):
+        catalog = self.spatial_catalog([self.mass()])
+        catalog['elements'][0]['bbox_max'] = [float('nan'), 10, 10]
+        self.assertEqual(annotate_catalog(catalog)['elements'][-1]['recommendation'], 'review')
+        for low, high in ((None, [1, 2, 3]), ([0, 0], [1, 2, 3]),
+                          ([float('inf'), 0, 0], [2000, 1, 1]), ([2000, 0, 0], [1900, 1, 1]),
+                          (['1600', 0, 0], [1700, 1, 1]), ([True, 0, 0], [1700, 1, 1])):
+            row = self.mass(); row.update(bbox_min=low, bbox_max=high)
+            self.assertEqual(annotate_catalog(self.spatial_catalog([row]))['elements'][-1]['recommendation'], 'review')
+
     def test_room_separation_stair_sketch_constraints_and_railing_path_are_helpers(self):
         helpers = ('<Разделитель помещений>', '<Room Separation>', 'Room Separation Lines',
                    '<Эскиз лестницы/пандуса: Граница>',

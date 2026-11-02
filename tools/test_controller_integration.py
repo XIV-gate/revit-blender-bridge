@@ -128,7 +128,7 @@ with patch.object(runtime, 'WorkerProcess', TestWorker), patch.object(runtime, '
     runtime.begin_export(scene)
     assert runtime.STATE.action == 'convert', 'Old matcher revision must not use the selection-only no-op'
     wait_ready()
-    assert json.loads(props.import_context_json)['format'] == 4
+    assert json.loads(props.import_context_json)['format'] == 6
     assert props.import_id == identity and props.result_placements == 3
     assert props.import_manifest_path == snapshot
     assert len(TestWorker.export_requests) == exports and len(TestWorker.started_executables) == starts
@@ -148,6 +148,31 @@ with patch.object(runtime, 'WorkerProcess', TestWorker), patch.object(runtime, '
     wait_ready()
     assert props.result_placements == 1 and props.origin_valid
     assert len(TestWorker.export_requests) == 1, 'Subset removal must not export or convert again'
+    # Change an import option while only one element remains selected. The
+    # converter must receive that subset, but retain the full source snapshot
+    # selection for a later restore without another worker request.
+    props.filter_remote_geometry = False
+    runtime.begin_export(scene)
+    assert runtime.STATE.action == 'convert' and runtime.STATE.conversion_selection_ids == {'11'}
+    selection_path = Path(runtime.STATE.converted_usd).with_suffix('.selection.json')
+    assert read_json(selection_path)['include_ids'] == ['11']
+    wait_ready()
+    assert props.result_placements == 1
+    assert json.loads(props.import_snapshot_selection_json) == ['11', '12', '13']
+    assert json.loads(props.import_context_json)['filter_remote_geometry'] is False
+    assert read_json(runtime.STATE.conversion_response)['remote_components'] == {}
+    assert len(TestWorker.export_requests) == exports and len(TestWorker.started_executables) == starts
+    props.elements[1].selected = props.elements[2].selected = True
+    props.filter_remote_geometry = True
+    runtime.begin_export(scene)
+    assert runtime.STATE.action == 'convert'
+    wait_ready()
+    assert props.result_placements == 3 and props.import_manifest_path == snapshot
+    assert len(TestWorker.export_requests) == exports and len(TestWorker.started_executables) == starts
+    props.elements[1].selected = props.elements[2].selected = False
+    runtime.begin_export(scene)
+    wait_ready()
+    assert props.result_placements == 1
     other_install = WORK / 'another-revit-installation'
     other_install.mkdir()
     other_exe = other_install / 'Revit.exe'; other_exe.write_bytes(b'explicit worker double')
@@ -163,6 +188,7 @@ report = dict(status='passed', blender=bpy.app.version_string, real_converter_su
               catalog_selection=True, selective_reimport=True, scene_binding=True, changed_revit_restarts_worker=True,
               tolerance_snapshot_reimport_without_revit=True, snapshot_original_sha256=True,
               legacy_matcher_context_reconverted_without_revit=True,
+              remote_option_and_subset_reconverted_without_revit=True,
               general_export_reuse_disabled=True, revit_io='test double')
 (WORK / 'result.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
 print('XIVGATE_CONTROLLER ' + json.dumps(report))

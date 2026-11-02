@@ -268,6 +268,49 @@ def lookup_export(indexpath, signature):
         return None
 
 
+def snapshot_subset_compatible(manifest, current_ids, previous_ids):
+    """Check selection ownership after lookup_snapshot verified the raw payload.
+
+    Catalog IDs without geometry are permitted. A removed compound occurrence
+    which still contributes to a kept source/selection parent requires Revit.
+    This function reads no paths and never weakens snapshot file validation.
+    """
+    try:
+        collections = (list, tuple, set, frozenset)
+        if not isinstance(current_ids, collections) or not isinstance(previous_ids, collections):
+            return False
+        if any(not isinstance(value, str) or not value for values in (current_ids, previous_ids) for value in values):
+            return False
+        current, previous = set(current_ids), set(previous_ids)
+        if not current or not current.issubset(previous) or not isinstance(manifest, dict):
+            return False
+        rows = manifest.get('occurrences')
+        if not isinstance(rows, list):
+            return False
+        if current == previous:
+            return True
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get('id'), str):
+                return False
+            if row['id'] in current:
+                continue
+            sources = row.get('source_element_ids')
+            if sources is None:
+                sources = [row['id']]
+            parents = row.get('selection_parent_ids')
+            if parents is None:
+                parent = row.get('parent_id')
+                parents = [parent] if parent else []
+            if (not isinstance(sources, list) or not sources or not isinstance(parents, list)
+                    or any(not isinstance(value, str) for values in (sources, parents) for value in values)):
+                return False
+            if current.intersection(sources) or current.intersection(parents):
+                return False
+        return True
+    except (ValueError, TypeError, KeyError):
+        return False
+
+
 def lookup_snapshot(cache_root, manifest_path, source_sha256):
     """Validate the current import's owned snapshot, without reading original assets.
 

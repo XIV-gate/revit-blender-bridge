@@ -19,12 +19,18 @@ def main():
     parser.add_argument('--no-instance-matching', action='store_true')
     parser.add_argument('--instance-tolerance-mm', type=float, default=0.1)
     parser.add_argument('--no-revit-instances', action='store_true')
+    parser.add_argument('--keep-remote-components', action='store_true')
+    parser.add_argument('--selection')
     args = parser.parse_args()
     try:
+        selection = None
+        if args.selection:
+            selection = json.loads(Path(args.selection).read_text(encoding='utf-8-sig'))['include_ids']
         result = build_usd(args.manifest, args.target, include_materials=not args.no_materials,
             include_textures=not args.no_textures, center_model=not args.source_origin, source_offset=args.offset,
             match_instances=not args.no_instance_matching, instance_tolerance_mm=args.instance_tolerance_mm,
-            use_revit_instances=not args.no_revit_instances)
+            use_revit_instances=not args.no_revit_instances,
+            filter_remote_geometry=not args.keep_remote_components, selected_element_ids=selection)
         response = {'success': True, **result}
     except Exception as error:
         response = {'success': False, 'error': str(error), 'details': traceback.format_exc()}

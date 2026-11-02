@@ -73,6 +73,9 @@ class Runtime:
         self.pending_context = ''
         self.pending_snapshot_context = ''
         self.conversion_manifest = None
+        self.conversion_selection_ids = None
+        self.snapshot_selection_override = None
+        self.conversion_remote_report = None
         self.pending_selected_ids = None
         self.scanned_source_hash = ''
         self.force_refresh = False
@@ -125,6 +128,9 @@ class Runtime:
         self.session = None
         self.action = None
         self.file_root = None
+        self.conversion_selection_ids = None
+        self.snapshot_selection_override = None
+        self.conversion_remote_report = None
 
 
 STATE = Runtime()
@@ -161,6 +167,29 @@ def set_warnings(props, values):
         for key, value in entry.items():
             setattr(row, key, value)
     props.warning_count = len(props.warnings)
+
+
+def _remote_component_warnings(props, report, warnings):
+    prefix = 'Убраны удалённые части: '
+    marker = '\n' + prefix
+    values = [value for value in warnings if not str(value).startswith(prefix)]
+    details = report.get('elements', []) if isinstance(report, dict) else []
+    details = [row for row in details if isinstance(row, dict) and isinstance(row.get('id'), str)
+               and type(row.get('removed_components')) is int and row['removed_components'] > 0
+               and type(row.get('removed_triangles')) is int and row['removed_triangles'] > 0]
+    by_id = {row['id']: row for row in details}
+    for row in props.elements:
+        base = row.reason.split(marker, 1)[0]
+        detail = by_id.get(row.element_id)
+        if detail:
+            base += marker + f"компонентов {detail['removed_components']}, треугольников {detail['removed_triangles']}"
+        if row.reason != base:
+            row.reason = base
+    if details:
+        values.append(prefix + f"компонентов {sum(row['removed_components'] for row in details)}, "
+                      f"треугольников {sum(row['removed_triangles'] for row in details)}; элементы: "
+                      + ', '.join(sorted(by_id)) + '. Отключить: «Убирать дальние части».')
+    return values
 
 
 def _process_ids():
@@ -204,7 +233,7 @@ def export_logs(scene, target):
         # A cache hit can reference a different, verified job's output revision.
         directories.append(STATE.file_root.parent.parent)
     options = {name: getattr(props, name) for name in ('detail_level', 'preserve_instances', 'use_revit_instances', 'instance_tolerance_mm',
-        'import_materials', 'import_textures', 'pack_images', 'center_model', 'reuse_export_cache')}
+        'import_materials', 'import_textures', 'pack_images', 'center_model', 'reuse_export_cache', 'filter_remote_geometry')}
     try:
         revit = inspect_revit(bpy.path.abspath(props.revit_exe))
     except (OSError, ValueError, KeyError) as error:
@@ -380,6 +409,9 @@ def begin_export(scene, *, force_refresh=False):
     ids = selected_ids(props)
     if not ids:
         raise ValueError('Не выбран ни один элемент')
+    STATE.conversion_selection_ids = None
+    STATE.snapshot_selection_override = None
+    STATE.conversion_remote_report = None
     _record_stage('checking_source_and_cache', scene=scene)
     STATE.force_refresh = force_refresh
     if force_refresh and not STATE.force_scan_done:
@@ -393,16 +425,18 @@ def begin_export(scene, *, force_refresh=False):
     source_hash = source_sha256(source)
     STATE.pending_snapshot_context = json.dumps(dict(format='native_family_v1', source=str(source), sha256=source_hash,
         exe=os.path.normcase(str(Path(bpy.path.abspath(props.revit_exe)).resolve())), detail=props.detail_level), sort_keys=True)
-    STATE.pending_context = json.dumps(dict(format=4, source=str(source), sha256=source_hash,
+    STATE.pending_context = json.dumps(dict(format=6, source=str(source), sha256=source_hash,
         exe=os.path.normcase(str(Path(bpy.path.abspath(props.revit_exe)).resolve())),
         detail=props.detail_level, instances=props.preserve_instances, materials=props.import_materials,
         textures=props.import_textures, pack=props.pack_images, centered=props.center_model,
-        native_instances=props.use_revit_instances, instance_tolerance_mm=props.instance_tolerance_mm), sort_keys=True)
+        native_instances=props.use_revit_instances, instance_tolerance_mm=props.instance_tolerance_mm,
+        filter_remote_geometry=props.filter_remote_geometry), sort_keys=True)
     STATE.pending_selected_ids = ids
     STATE.pending_options = {'preserve_instances': props.preserve_instances, 'materials': props.import_materials,
                             'textures': props.import_textures, 'pack_images': props.pack_images,
                             'center_model': props.center_model, 'instance_tolerance_mm': props.instance_tolerance_mm,
-                            'use_revit_instances': props.use_revit_instances}
+                            'use_revit_instances': props.use_revit_instances,
+                            'filter_remote_geometry': props.filter_remote_geometry}
     same_context = props.import_id and props.import_context_json == STATE.pending_context
     if not force_refresh and same_context:
         from .blender_import import apply_selection, OWNER, ROOT_FLAG, AVAILABLE_IDS, SELECTION
@@ -425,22 +459,30 @@ def begin_export(scene, *, force_refresh=False):
                 pass  # Unknown metadata requires a complete source refresh.
     from .workflow import cache_root
     from .core.export_cache import export_signature, lookup_export
-    if (not force_refresh and STATE.delta_ids is None and props.import_id
+    if (not force_refresh and props.import_id
             and props.import_snapshot_context_json == STATE.pending_snapshot_context
             and props.import_manifest_path):
-        from .core.export_cache import lookup_snapshot
+        from .core.export_cache import lookup_snapshot, snapshot_subset_compatible
         try:
-            snapshot_ids = set(json.loads(props.import_snapshot_selection_json))
+            stored_ids = json.loads(props.import_snapshot_selection_json)
+            if not isinstance(stored_ids, list) or any(not isinstance(value, str) for value in stored_ids):
+                raise ValueError('Неверный набор ID снимка')
+            snapshot_ids = set(stored_ids)
         except (TypeError, ValueError):
             snapshot_ids = set()
-        if ids == snapshot_ids:
+        if ids.issubset(snapshot_ids):
             snapshot = lookup_snapshot(cache_root(props), props.import_manifest_path, source_hash)
             if snapshot is not None:
-                STATE.scene = scene
-                STATE.file_root = snapshot.parent
-                _start_conversion(snapshot)
-                _timer_start()
-                return
+                if ids == snapshot_ids or snapshot_subset_compatible(read_json(snapshot), ids, snapshot_ids):
+                    STATE.scene = scene
+                    STATE.file_root = snapshot.parent
+                    STATE.delta_ids = None
+                    if ids != snapshot_ids:
+                        STATE.conversion_selection_ids = ids.copy()
+                        STATE.snapshot_selection_override = snapshot_ids.copy()
+                    _start_conversion(snapshot)
+                    _timer_start()
+                    return
     from . import bl_info
     host = inspect_revit(bpy.path.abspath(props.revit_exe))
     key = '|'.join((host['key'], host.get('version', ''), os.path.normcase(str(Path(bpy.path.abspath(props.revit_exe)).resolve()))))
@@ -474,9 +516,10 @@ def begin_export(scene, *, force_refresh=False):
 def _start_conversion(manifest):
     manifest = _within_job(manifest)
     STATE.conversion_manifest = manifest
+    STATE.conversion_remote_report = None
     target = manifest.with_name('scene.usdc')
     response = manifest.with_name('conversion.json')
-    if STATE.file_root is not None:
+    if STATE.file_root is not None or STATE.conversion_selection_ids is not None:
         target = manifest.with_name('scene-' + uuid.uuid4().hex + '.usdc')
         response = target.with_suffix('.conversion.json')
     python_exe = Path(sys.prefix) / 'bin' / ('python.exe' if os.name == 'nt' else 'python3')
@@ -485,6 +528,13 @@ def _start_conversion(manifest):
     command = [str(python_exe), '-m', 'xivgate_revit_bridge.convert_cli', '--manifest', str(manifest),
                '--target', str(target), '--response', str(response)]
     options = STATE.pending_options
+    if STATE.conversion_selection_ids is not None:
+        from .core.jobs import atomic_write_json
+        selection = target.with_suffix('.selection.json')
+        atomic_write_json(selection, {'include_ids': sorted(STATE.conversion_selection_ids)})
+        command.extend(['--selection', str(selection)])
+    if not options.get('filter_remote_geometry', True):
+        command.append('--keep-remote-components')
     command.extend(['--instance-tolerance-mm', str(options.get('instance_tolerance_mm', 0.1))])
     if not options['preserve_instances']:
         command.append('--no-instance-matching')
@@ -540,7 +590,8 @@ def _apply_import():
     if STATE.delta_ids is None and STATE.conversion_manifest is not None:
         props.import_manifest_path = str(STATE.conversion_manifest)
         props.import_snapshot_context_json = STATE.pending_snapshot_context
-        props.import_snapshot_selection_json = json.dumps(sorted(STATE.pending_selected_ids))
+        snapshot_ids = STATE.snapshot_selection_override if STATE.snapshot_selection_override is not None else STATE.pending_selected_ids
+        props.import_snapshot_selection_json = json.dumps(sorted(snapshot_ids))
     else:
         # A union of separate delta exports is not a single complete raw snapshot.
         props.import_manifest_path = ''
@@ -554,7 +605,8 @@ def _apply_import():
     from .ui import imported_root
     align_previews(STATE.scene, result['source_offset'] if props.origin_centered else (0, 0, 0),
                    imported_root(STATE.scene, props))
-    _warnings(raw_values(props.warnings) + ['Недоступно изображение: ' + path for path in result['missing_images']])
+    _warnings(_remote_component_warnings(props, STATE.conversion_remote_report,
+        raw_values(props.warnings) + ['Недоступно изображение: ' + path for path in result['missing_images']]))
     props.result_placements = result['placements']
     props.result_prototypes = result['prototypes']
     STATE.action = None
@@ -602,6 +654,7 @@ def tick():
             if code != 0 or not response or not response.get('success'):
                 raise RuntimeError((response or {}).get('error', 'Не удалось подготовить геометрию; см. conversion.log'))
             _warnings(raw_values(STATE.props.warnings) + ['Не найдена текстура: ' + path for path in response.get('missing_textures', [])])
+            STATE.conversion_remote_report = response.get('remote_components')
             _apply_import()
             return .25 if STATE.action else None
         response = STATE.session.read_response(STATE.request_id)

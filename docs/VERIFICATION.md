@@ -1,39 +1,44 @@
 # Verification history
 
-## Local 0.5.1 candidate — 2026-11-02
+## Local candidate 0.5.1 — 2026-11-02, validation in progress
 
-- Reproduced two concrete 0.5.0 misses on an unchanged export: identical untextured
-  glass geometry with different unused UV, and identical geometry translated in
-  mesh-local coordinates. Normalizing comparison frames and compensating the
-  original anchor placement removes both causes without changing source bytes.
-- Actual model: 26,432 placements; 7,993 raw prototypes; 5,123 final 0.5.0 meshes
-  become 4,322 at the same 0.1 mm tolerance. UV-only correction accounts for 370
-  fewer meshes, frame correction for another 431. Pure regrouping takes under
-  one second locally; this excludes USD writing and Blender object creation.
-- Full real-payload USD checks in Blender 5.2.3 and 4.2.14 preserved all placements;
-  maximum world-bounds error was 0.0817 mm. A small real subset was then imported
-  to verify direct shared Mesh objects and UV layers. The full 26,432-object live
-  scene was not reimported or edited during debugging.
-- Selected facade panel is genuinely 7.412 mm shorter than the nearest same-type
-  size variant. At 0.1/1 mm it remains independent; at 5 mm its representative is
-  shared by 21 placements. Increasing tolerance is an intentional approximation.
-- Recommendation audit: 97,943 catalog elements, 71,576 default selections.
-  Exact helper categories and numeric CAD-copy suffix fixes remove 2,551 mistaken
-  defaults, yielding 69,025. Existing unique-ID overrides remain unchanged. No
-  blanket wall/equipment/mass or distance-based exclusions were introduced.
-- Remote study masses match the Revit catalog/raw geometry and the live Blender
-  coordinates within float precision. Their distance is source data, not an
-  import displacement. Local source-origin correction does not move them.
-- Pure suite: 186 tests, one symlink privilege skip. Six 0.5.1 workers compiled
-  against the supported API variants; only assembly version metadata changed in
-  C# relative to 0.5.0. Fresh worker assertions: 125 .NET10 / 129 Framework4.8.
-- Isolated 4.2/5.2 controller tests verify that context format 3 migrates to 4 by
-  reconverting a valid snapshot, with no new Revit start/export. Frame integration
-  covers reflections, nonuniform scaling, native-disabled strict comparison,
-  textured UV preservation and unchanged original buffers.
-- Test copies, profiles and reports remain under the previously approved project
-  Temp directory for reproduction. No publication or live-profile update is part
-  of this diagnostic candidate.
+- Conversion context 6 includes local-pivot compensation, unused-UV handling for
+  explicitly untextured materials, positive local-axis affine sharing and optional
+  remote floor-component filtering. Affine placements preserve physical dimensions;
+  geometry, material, inverse-transpose normal and UV checks constrain sharing.
+- Current observed live Blender scene: 26,400 objects / 3,537 Mesh data blocks,
+  versus the original 5,123 Mesh, using the retained legacy 5 mm tolerance plus
+  affine sharing. All 1,512 inspected glass panels share one Mesh with placement
+  scales preserving their dimensions. These counts are scene/configuration evidence,
+  not default-0.1-mm results or a guarantee for other models.
+- Selection reversibly hid 32 distant helper/CAD/Mass elements. Generic distant
+  Mass remains a recommendation with reasons and per-element overrides; no silent
+  category-wide prohibition was introduced. Independently, optional
+  `filter_remote_geometry` removed 158 disconnected remote triangles from floor
+  5602806 and retained 1,006. Raw geometry and original RVT are unchanged; disabling
+  the filter permits reconstruction from a valid snapshot.
+- Verified raw snapshot subsets can support regrouping without another Revit export,
+  subject to source, selection and dependency validation. This does not claim that
+  every changed selection or invalidated cache can avoid Revit.
+- Latest pure Python suite: 215 tests, one Windows privilege-dependent skip. Fresh
+  C# protocol assertions: 125 on .NET 10 / 129 on .NET Framework 4.8; six metadata-only
+  worker builds report 0.5.1.0. Existing 2025/2026 net10 CS1701 caveat is unchanged.
+- Candidate ZIP SHA256: `44b4e8956f728181db6ec26718cab52fdb7e58107f17455ce3ef37bbc938dbd4`.
+  Fresh isolated package installs passed in Blender 4.2.14 / 5.2.3; the actual
+  0.5.0 → 0.5.1 → 0.5.0 updater cycle passed in 5.2.3. Frozen-loader migration,
+  registration/package rollback and legacy 0.4.7 client compatibility passed in 4.2.14.
+- With explicit permission, the live add-on was updated to 0.5.1 through the validated
+  transaction and owned-Revit shutdown. Mesh sharing, selection and all 13 packed,
+  loaded file images survived; Preferences and original blend were not saved.
+- No publication, new native Revit execution or expanded native-version coverage
+  is claimed here. Published stable remains 0.5.0. Earlier candidate mesh counts
+  are superseded by the explicitly scoped live-scene observation above.
+- Eight fresh host scenarios passed across Blender 4.2.14 and 5.2.3: affine sharing,
+  tolerance changes, controller context 6 and real remote-component replay. The real
+  replay switched floor 5602806 through 1006 → 1164 → 1006 triangles, retained 1512
+  users of the control panel mesh, imported only two requested IDs for a subset,
+  then restored 1542 placements. Raw manifest/binary hashes were unchanged. The
+  controller's subset/toggle/restore cycle made no additional worker export/start.
 
 ## Automated evidence
 

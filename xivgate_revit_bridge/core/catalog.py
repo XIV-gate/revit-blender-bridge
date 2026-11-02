@@ -1,5 +1,6 @@
 """Exact, user-overridable element selection. Revit IDs stay strings."""
 import copy
+import math
 import re
 
 
@@ -32,6 +33,53 @@ _HELPER_CATEGORIES = frozenset(name.casefold() for name in (
 # Revit adds a numeric copy suffix to duplicate CAD imports. Arbitrary text
 # after an extension is deliberately not evidence of a CAD category.
 _CAD_CATEGORY = re.compile(r'\.(?:dwg|dxf)(?:[ \t]+\([0-9]+\))?$', re.IGNORECASE)
+_FACADE_ANCHORS = frozenset(name.casefold() for name in (
+    'Окна', 'Окно', 'Windows', 'Window', 'Панели витража',
+    'Curtain Panels', 'Curtain Wall Panels', 'Импосты витража',
+    'Curtain Wall Mullions', 'Curtain Mullions', 'Mullions',
+))
+_MASS_CATEGORIES = frozenset(('формы', 'mass', 'masses', 'forms'))
+
+
+def _finite_bounds(item):
+    low, high = item.get('bbox_min'), item.get('bbox_max')
+    try:
+        if len(low) != 3 or len(high) != 3:
+            return None
+        if any(isinstance(value, (str, bool)) for point in (low, high) for value in point):
+            return None
+        if not all(math.isfinite(a) and math.isfinite(b) and a <= b for a, b in zip(low, high)):
+            return None
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return low, high
+
+
+def _facade_region(elements):
+    boxes = []
+    for item in elements:
+        category = str(item.get('category_name') or item.get('category') or '').strip().casefold()
+        box = _finite_bounds(item) if category in _FACADE_ANCHORS else None
+        if box is not None:
+            boxes.append(box)
+    if len(boxes) < 20:
+        return None
+    low = tuple(min(box[0][axis] for box in boxes) for axis in range(3))
+    high = tuple(max(box[1][axis] for box in boxes) for axis in range(3))
+    margin = max(100.0, 2 * math.dist(low, high))
+    return (low, high, margin) if math.isfinite(margin) else None
+
+
+def _distant_mass_reason(item, region):
+    box = _finite_bounds(item)
+    if region is None or box is None:
+        return None
+    low, high, margin = region
+    if not any(box[1][axis] < low[axis] - margin or box[0][axis] > high[axis] + margin for axis in range(3)):
+        return None
+    gap = math.hypot(*(max(low[axis] - box[1][axis], box[0][axis] - high[axis], 0) for axis in range(3)))
+    return ('Формообразующий объект целиком вне области фасада: расстояние '
+            f'{gap:.1f} м, запас области {margin:.1f} м; можно включить вручную')
 
 
 def is_reference_category(name):
@@ -47,6 +95,7 @@ def annotate_catalog(catalog):
     afterwards by initial_selection using stable unique_id values.
     """
     annotated = copy.deepcopy(catalog)
+    region = _facade_region(annotated.get('elements', []))
     for item in annotated.get('elements', []):
         if item.get('recommendation') == 'exclude':
             continue
@@ -69,6 +118,13 @@ def annotate_catalog(catalog):
                 item.update(recommendation='review', reason='Назначение стены требует проверки')
         elif _MEP_CATEGORY.search(category):
             item.update(recommendation='exclude', reason='Инженерная категория обычно не нужна для фасада; можно включить вручную')
+        elif item.get('recommendation') == 'review' and (
+                category_key in _MASS_CATEGORIES or str(item.get('category_id')) == '-2003400'):
+            # -2003400 is the actual Mass category in the source catalog;
+            # Mass Floors (-2003403) and mixed central/remote slabs are untouched.
+            reason = _distant_mass_reason(item, region)
+            if reason:
+                item.update(recommendation='exclude', reason=reason)
         elif item.get('recommendation') not in ('include', 'review'):
             item.update(recommendation='review', reason='Назначение элемента требует проверки')
     return annotated

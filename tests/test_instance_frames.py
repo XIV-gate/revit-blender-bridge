@@ -70,6 +70,14 @@ class InstanceFramesTests(unittest.TestCase):
         original = [1., 0., 0., 0., 1., 0., 0., 0., 1., 10., 20., 30.]
         self.assertEqual(compensated_transform(original, [.2, 3, -1], [.2, 3, -1], [1, 1, 1]), original)
 
+    def test_optional_positive_scales_compose_with_mirror_without_changing_old_default(self):
+        original = [1.,0,0,0,2.,0,0,0,3.,10.,20.,30.]
+        result = compensated_transform(original,[1,2,3],[.5,1,1],[-1,1,1],scales=[2,3,.5])
+        self.assertEqual(result[:9],[-2.,0,0,0,6.,0,0,0,1.5])
+        self.assertEqual(result[9:],[12.,18.,37.5])
+        for scale in ([0,1,1],[-1,1,1],[1,float('nan'),1],[1,1]):
+            with self.assertRaises(ValueError):compensated_transform(original,[0]*3,[0]*3,[1]*3,scales=scale)
+
     def test_nonfinite_vertices_normals_or_uv_are_rejected(self):
         for field in (0, 3, 6):
             for value in (np.nan, np.inf, -np.inf):

@@ -43,8 +43,8 @@ def center_prototypes(records_by_id):
     return centered, centers
 
 
-def compensated_transform(original12, sourcecenter, anchorcenter, signs):
-    """Compose original placement with [diag(signs), sourcecenter-R*anchorcenter].
+def compensated_transform(original12, sourcecenter, anchorcenter, signs, scales=(1,1,1)):
+    """Compose placement with [diag(signs*scales), sourcecenter-R*anchorcenter].
 
     The 12-number Revit transport stores three basis *columns* followed by the
     origin. Compensation is applied through that original basis, preserving
@@ -67,6 +67,10 @@ def compensated_transform(original12, sourcecenter, anchorcenter, signs):
     axes = vector(signs, 3)
     if not np.all((axes == 1) | (axes == -1)):
         raise ValueError('Знаки осей экземпляра должны быть +1 или −1')
+    scale = vector(scales,3)
+    if np.any(scale<=0):
+        raise ValueError('Масштаб экземпляра должен быть положительным')
+    axes = axes*scale
     basis = original[:9].reshape(3, 3).T
     with np.errstate(over='ignore', invalid='ignore'):
         delta = source - axes * anchor

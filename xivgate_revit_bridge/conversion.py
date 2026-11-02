@@ -12,7 +12,8 @@ def srgb(value):
 
 
 def build_usd(manifest_path, target_path, *, include_materials=True, include_textures=True, center_model=True, source_offset=None,
-              match_instances=True, instance_tolerance_mm=0.1, use_revit_instances=True):
+              match_instances=True, instance_tolerance_mm=0.1, use_revit_instances=True,
+              filter_remote_geometry=True, selected_element_ids=None):
     import numpy as np
     from pxr import Usd, UsdGeom, UsdShade, Sdf, Gf, Vt
 
@@ -26,6 +27,13 @@ def build_usd(manifest_path, target_path, *, include_materials=True, include_tex
     if manifest.get('schema') != 1 or manifest.get('units') != 'metres':
         raise ValueError('Неподдерживаемая схема геометрии')
     occurrences = manifest['occurrences']
+    if selected_element_ids is not None:
+        from .core.export_cache import snapshot_subset_compatible
+        previous = set(map(str, selected_element_ids)) | {str(row['id']) for row in occurrences}
+        if not snapshot_subset_compatible(manifest, selected_element_ids, previous):
+            raise ValueError('Выбор требует новой выгрузки зависимых элементов из Revit')
+        selected = set(selected_element_ids)
+        occurrences = [row for row in occurrences if str(row['id']) in selected]
     if not occurrences:
         raise ValueError('В выбранных элементах нет геометрии')
     ids = [str(item['id']) for item in occurrences]
@@ -110,6 +118,10 @@ def build_usd(manifest_path, target_path, *, include_materials=True, include_tex
         data = memoryview(mapped)[start:start + size]
         validate_prototype(prototype, data)
         records_by_id[key] = np.frombuffer(data, dtype=dtype)
+    remote_report = {}
+    if filter_remote_geometry:
+        from .core.remote_components import filter_remote_components
+        records_by_id, remote_report = filter_remote_components(occurrences, records_by_id)
     if match_instances:
         from .core.instance_matching import plan_instances
         comparison_records = records_by_id
@@ -119,68 +131,77 @@ def build_usd(manifest_path, target_path, *, include_materials=True, include_tex
             comparison_records, centers = center_prototypes(records_by_id)
         instance_plan = plan_instances(occurrences, comparison_records, manifest['materials'],
             tolerance_mm=instance_tolerance_mm, use_revit=use_revit_instances)
+        affine_plan = {'redirects': {}, 'scales': {}, 'statistics': {}}
+        if use_revit_instances:
+            from .core.affine_instances import plan_affine_instances
+            affine_plan = plan_affine_instances(occurrences, records_by_id, manifest['materials'],
+                tolerance_mm=instance_tolerance_mm)
         adjusted = []
         for item in occurrences:
             identifier = str(item['id'])
             signs = instance_plan.get('adjustments', {}).get(identifier, (1, 1, 1))
             anchor = instance_plan['redirects'][identifier]
+            scales = (1, 1, 1)
+            if identifier in affine_plan['redirects']:
+                anchor = affine_plan['redirects'][identifier]
+                scales = affine_plan['scales'][identifier]
+                signs = (1, 1, 1)
             if centers is not None:
                 # Compare centered geometry, but write the ORIGINAL anchor mesh.
                 # Restore its source pivot through this placement compensation.
-                transform = compensated_transform(item['transform'], centers[int(item['prototype'])], centers[int(anchor)], signs)
+                transform = compensated_transform(item['transform'], centers[int(item['prototype'])], centers[int(anchor)], signs, scales=scales)
             else:
                 transform = list(item['transform'])
                 for axis, sign in enumerate(signs):
                     transform[axis * 3:axis * 3 + 3] = [sign * value for value in transform[axis * 3:axis * 3 + 3]]
             adjusted.append(dict(item, prototype=anchor, transform=transform))
         occurrences = adjusted
-        required = instance_plan['representatives']
+        required = {int(item['prototype']) for item in occurrences}
         instance_statistics = instance_plan['statistics']
+        instance_statistics['legacy_representatives'] = instance_statistics['representatives']
+        instance_statistics['representatives'] = len(required)
+        instance_statistics['affine'] = affine_plan['statistics']
     else:
         required = {int(item['prototype']) for item in occurrences}
         instance_statistics = {}
-    with binary_path.open('rb') as binary:
-        for prototype in prototypes.values():
-            if int(prototype['id']) not in required:
-                continue
-            binary.seek(int(prototype['offset']))
-            data = binary.read(int(prototype['bytes']))
-            validate_prototype(prototype, data)
-            records = np.frombuffer(data, dtype=dtype)
-            vertices = np.ascontiguousarray(records['vertices'].reshape(-1, 8))
-            if not np.isfinite(vertices).all():
-                raise ValueError('Геометрия содержит нечисловые значения')
-            path = '/Prototypes/p_' + str(prototype['id'])
-            UsdGeom.Xform.Define(stage, path)
-            mesh = UsdGeom.Mesh.Define(stage, path + '/mesh')
-            geometry_identity = hashlib.sha256(np.ascontiguousarray(records['vertices']).tobytes())
-            geometry_identity.update(bytes((include_materials, include_textures)))
-            for key in records['material']:
-                geometry_identity.update(bytes.fromhex(material_signatures[int(key)]))
-            mesh.GetPrim().CreateAttribute('revit:geometry_signature', Sdf.ValueTypeNames.String, custom=True).Set(geometry_identity.hexdigest())
-            mesh.CreateSubdivisionSchemeAttr('none')
-            mesh.CreatePointsAttr(Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(vertices[:, :3])))
-            mesh.CreateFaceVertexCountsAttr(Vt.IntArray.FromNumpy(np.full(int(prototype['triangles']), 3, dtype=np.int32)))
-            mesh.CreateFaceVertexIndicesAttr(Vt.IntArray.FromNumpy(np.arange(len(vertices), dtype=np.int32)))
-            mesh.CreateNormalsAttr(Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(vertices[:, 3:6])))
-            mesh.SetNormalsInterpolation('vertex')
-            UsdGeom.PrimvarsAPI(mesh).CreatePrimvar('st', Sdf.ValueTypeNames.TexCoord2fArray, 'vertex').Set(Vt.Vec2fArray.FromNumpy(np.ascontiguousarray(vertices[:, 6:8])))
-            mesh.CreateDoubleSidedAttr(True)
-            if materials:
-                binding = UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim())
-                keys = np.unique(records['material'])
-                if not all(int(key) in materials for key in keys):
-                    raise ValueError('Не найден материал геометрии')
-                if len(keys) == 1:
-                    binding.Bind(materials[int(keys[0])])
-                else:
-                    for key in keys:
-                        subset = UsdGeom.Subset.Define(stage, str(mesh.GetPath()) + '/material_' + str(int(key)).replace('-', 'n'))
-                        subset.CreateElementTypeAttr('face')
-                        subset.CreateFamilyNameAttr('materialBind')
-                        subset.CreateIndicesAttr(Vt.IntArray.FromNumpy(np.flatnonzero(records['material'] == key).astype(np.int32)))
-                        UsdShade.MaterialBindingAPI.Apply(subset.GetPrim()).Bind(materials[int(key)])
-                    binding.SetMaterialBindSubsetsFamilyType('partition')
+    for prototype in prototypes.values():
+        if int(prototype['id']) not in required:
+            continue
+        records = records_by_id[int(prototype['id'])]
+        vertices = np.ascontiguousarray(records['vertices'].reshape(-1, 8))
+        if not np.isfinite(vertices).all():
+            raise ValueError('Геометрия содержит нечисловые значения')
+        path = '/Prototypes/p_' + str(prototype['id'])
+        UsdGeom.Xform.Define(stage, path)
+        mesh = UsdGeom.Mesh.Define(stage, path + '/mesh')
+        geometry_identity = hashlib.sha256(np.ascontiguousarray(records['vertices']).tobytes())
+        geometry_identity.update(bytes((include_materials, include_textures)))
+        for key in records['material']:
+            geometry_identity.update(bytes.fromhex(material_signatures[int(key)]))
+        mesh.GetPrim().CreateAttribute('revit:geometry_signature', Sdf.ValueTypeNames.String, custom=True).Set(geometry_identity.hexdigest())
+        mesh.CreateSubdivisionSchemeAttr('none')
+        mesh.CreatePointsAttr(Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(vertices[:, :3])))
+        mesh.CreateFaceVertexCountsAttr(Vt.IntArray.FromNumpy(np.full(len(records), 3, dtype=np.int32)))
+        mesh.CreateFaceVertexIndicesAttr(Vt.IntArray.FromNumpy(np.arange(len(vertices), dtype=np.int32)))
+        mesh.CreateNormalsAttr(Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(vertices[:, 3:6])))
+        mesh.SetNormalsInterpolation('vertex')
+        UsdGeom.PrimvarsAPI(mesh).CreatePrimvar('st', Sdf.ValueTypeNames.TexCoord2fArray, 'vertex').Set(Vt.Vec2fArray.FromNumpy(np.ascontiguousarray(vertices[:, 6:8])))
+        mesh.CreateDoubleSidedAttr(True)
+        if materials:
+            binding = UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim())
+            keys = np.unique(records['material'])
+            if not all(int(key) in materials for key in keys):
+                raise ValueError('Не найден материал геометрии')
+            if len(keys) == 1:
+                binding.Bind(materials[int(keys[0])])
+            else:
+                for key in keys:
+                    subset = UsdGeom.Subset.Define(stage, str(mesh.GetPath()) + '/material_' + str(int(key)).replace('-', 'n'))
+                    subset.CreateElementTypeAttr('face')
+                    subset.CreateFamilyNameAttr('materialBind')
+                    subset.CreateIndicesAttr(Vt.IntArray.FromNumpy(np.flatnonzero(records['material'] == key).astype(np.int32)))
+                    UsdShade.MaterialBindingAPI.Apply(subset.GetPrim()).Bind(materials[int(key)])
+                binding.SetMaterialBindSubsetsFamilyType('partition')
     for item in occurrences:
         obj = UsdGeom.Xform.Define(stage, '/World/Elements/e_' + str(item['id']))
         obj.GetPrim().GetReferences().AddInternalReference('/Prototypes/p_' + str(item['prototype']))
@@ -207,4 +228,4 @@ def build_usd(manifest_path, target_path, *, include_materials=True, include_tex
     stage.GetRootLayer().Save()
     return {'usd_path': str(target), 'placements': len(occurrences), 'prototypes': len(required),
             'instance_matching': instance_statistics, 'manifest_path': str(source),
-            'missing_textures': missing, 'source_offset': list(offset)}
+            'missing_textures': missing, 'source_offset': list(offset), 'remote_components': remote_report}
