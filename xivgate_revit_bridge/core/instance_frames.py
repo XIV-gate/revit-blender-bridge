@@ -43,7 +43,7 @@ def center_prototypes(records_by_id):
     return centered, centers
 
 
-def compensated_transform(original12, sourcecenter, anchorcenter, signs, scales=(1,1,1)):
+def compensated_transform(original12, sourcecenter, anchorcenter, signs, scales=(1,1,1), rotation=None):
     """Compose placement with [diag(signs*scales), sourcecenter-R*anchorcenter].
 
     The 12-number Revit transport stores three basis *columns* followed by the
@@ -71,10 +71,15 @@ def compensated_transform(original12, sourcecenter, anchorcenter, signs, scales=
     if np.any(scale<=0):
         raise ValueError('Масштаб экземпляра должен быть положительным')
     axes = axes*scale
+    local = np.diag(axes)
+    if rotation is not None:
+        local = np.asarray(rotation,dtype=np.float64)
+        if local.shape!=(3,3) or not np.isfinite(local).all() or not np.allclose(local.T@local,np.eye(3),atol=1e-7,rtol=0):
+            raise ValueError('Сопоставление экземпляров должно сохранять размеры')
     basis = original[:9].reshape(3, 3).T
     with np.errstate(over='ignore', invalid='ignore'):
-        delta = source - axes * anchor
-        transformed_basis = basis * axes
+        delta = source - local @ anchor
+        transformed_basis = basis @ local
         origin = original[9:] + basis @ delta
     if not np.isfinite(transformed_basis).all() or not np.isfinite(origin).all():
         raise ValueError('Компенсация трансформации выходит за числовой диапазон')

@@ -1,4 +1,4 @@
-"""Conservative positive-axis affine sharing; never modify raw geometry."""
+"""Congruent triangle matching; scaling different dimensions is forbidden."""
 from collections import defaultdict
 import hashlib
 import math
@@ -17,7 +17,7 @@ def _order(value):
 
 
 def plan_affine_instances(occurrences, records_by_id, materials, tolerance_mm=.1):
-    """Find same-type meshes differing only by translation and positive scale.
+    """Find same-type meshes differing only by translation and triangle order.
 
     Return only groups containing at least two distinct raw prototype IDs. All
     their occurrences, including anchor occurrences, are returned so callers
@@ -135,10 +135,9 @@ def plan_affine_instances(occurrences, records_by_id, materials, tolerance_mm=.1
             anchor = info[anchor_id]
             if not np.array_equal(source['materials'],anchor['materials']):
                 continue
-            with np.errstate(over='ignore',invalid='ignore',divide='ignore'):
-                scale = np.divide(source['extent'],anchor['extent'],out=np.ones(3),where=anchor['extent']!=0)
-            if not np.isfinite(scale).all() or np.any(scale<=0):
+            if np.max(np.abs(source['extent']-anchor['extent']))*gain>limit+1e-12:
                 continue
+            scale = np.ones(3)
             values = anchor['vertices'].reshape(-1,8)[anchor['point_order']].astype(np.float64)
             predicted = (values[:,:3]-anchor['center'])*scale+source['center']
             error = float(np.linalg.norm(predicted-source_values[:,:3],axis=1).max()*gain)
@@ -173,4 +172,10 @@ def plan_affine_instances(occurrences, records_by_id, materials, tolerance_mm=.1
                 scales_by_id[str(row['id'])] = scale.copy()
     stats['grouped_prototypes'] = len(grouped_prototypes)
     stats['grouped_occurrences'] = len(redirects)
-    return dict(redirects=redirects,scales=scales_by_id,statistics=stats)
+    from .box_instances import plan_box_instances
+    box_plan=plan_box_instances(occurrences,records_by_id,materials,tolerance_mm)
+    for identifier,anchor in box_plan['redirects'].items():
+        redirects[identifier]=anchor
+        scales_by_id[identifier]=[1.,1.,1.]
+    stats['boxes']=box_plan['statistics']
+    return dict(redirects=redirects,scales=scales_by_id,rotations=box_plan['rotations'],statistics=stats)

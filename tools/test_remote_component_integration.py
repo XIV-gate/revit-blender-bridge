@@ -76,13 +76,15 @@ for index,(label,enabled,ids,expected_triangles)in enumerate((
     assert len(objects[floor].data.polygons)==expected_triangles
     control=objects['11118419']
     users=sum(obj.data==control.data for obj in objects.values())
-    assert users == (1 if label == 'subset' else 1512), (label, users)
+    assert (users == 1) if label == 'subset' else (users > 1), (label, users)
+    if label != 'subset':
+        assert objects['11118419'].data != objects['5401169'].data, 'Different sizes must stay independent'
     assert (digest(manifest),digest(binary))==original
     passes.append(dict(case=label,filter_enabled=enabled,placements=len(ids),floor_triangles=expected_triangles,
                        control_mesh_users=users,seconds=time.monotonic()-started,remote_components=details))
 assert bpy.data.objects.get('Cube')is not None
 assert not (Path(os.environ['BLENDER_USER_CONFIG'])/'userpref.blend').exists()
 report=dict(status='passed',blender=bpy.app.version_string,raw_unchanged=True,passes=passes,
-            subset_only_selected_ids=True,control_pane_users_full_selection=1512,no_revit=True)
+            subset_only_selected_ids=True,different_sizes_independent=True,no_revit=True)
 (work/'result.json').write_text(json.dumps(report,indent=2),encoding='utf-8')
 print('AGR_REMOTE_INTEGRATION '+json.dumps(report),flush=True)

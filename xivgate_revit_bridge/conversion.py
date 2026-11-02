@@ -149,7 +149,8 @@ def build_usd(manifest_path, target_path, *, include_materials=True, include_tex
             if centers is not None:
                 # Compare centered geometry, but write the ORIGINAL anchor mesh.
                 # Restore its source pivot through this placement compensation.
-                transform = compensated_transform(item['transform'], centers[int(item['prototype'])], centers[int(anchor)], signs, scales=scales)
+                transform = compensated_transform(item['transform'], centers[int(item['prototype'])], centers[int(anchor)], signs, scales=scales,
+                    rotation=affine_plan.get('rotations',{}).get(identifier))
             else:
                 transform = list(item['transform'])
                 for axis, sign in enumerate(signs):

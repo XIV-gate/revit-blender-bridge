@@ -1,4 +1,4 @@
-"""Verify scaled shared meshes in real USD/Blender, without changing a live scene."""
+"""Verify size-preserving shared meshes in real USD/Blender, without changing a live scene."""
 import hashlib
 import json
 import os
@@ -20,13 +20,13 @@ from xivgate_revit_bridge.blender_import import import_result, OWNER
 work = Path(os.environ['RBB_TEST_ROOT'])/('affine_integration_'+str(os.getpid())+'_'+uuid.uuid4().hex[:8])
 manifest = write_fixture(work)
 data = json.loads(manifest.read_text(encoding='utf-8'))
-records = {0:box((2,.035,3)), 1:box((4,.035,5),(3.9,.2,-2)),
-           2:box((2,.035,3)), 3:box((4,.035,5)), 4:box((3,.035,6))}
+records = {0:box((2,.035,3)), 1:box((2,.035,3),(3.9,.2,-2)),
+           2:box((2,.035,3)), 3:box((4,.035,5)), 4:box((2,.035,3))}
 for index,record in records.items():
     record['material'] = 8 if index<2 else 7
 records[1]['vertices'][:,:,6:8] += .25  # Explicitly untextured: UV variation is allowed.
 records[3]['vertices'][:,:,6:8] += .125  # Textured: this must remain a separate mesh.
-for index,scale in ((5,np.array([1.,1.,1.])), (6,np.array([2.,.5,3.]))):
+for index,scale in ((5,np.array([1.,1.,1.])), (6,np.array([1.,1.,1.]))):
     record = np.zeros(1,dtype=DTYPE)
     record['vertices'][0,:,:3] = np.array([[0.,0.,0.],[1.,1.,0.],[0.,0.,1.]])*scale
     normal = np.array([1.,-1.,0.])/scale

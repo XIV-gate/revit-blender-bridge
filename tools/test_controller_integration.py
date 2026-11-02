@@ -128,7 +128,7 @@ with patch.object(runtime, 'WorkerProcess', TestWorker), patch.object(runtime, '
     runtime.begin_export(scene)
     assert runtime.STATE.action == 'convert', 'Old matcher revision must not use the selection-only no-op'
     wait_ready()
-    assert json.loads(props.import_context_json)['format'] == 6
+    assert json.loads(props.import_context_json)['format'] == 7
     assert props.import_id == identity and props.result_placements == 3
     assert props.import_manifest_path == snapshot
     assert len(TestWorker.export_requests) == exports and len(TestWorker.started_executables) == starts

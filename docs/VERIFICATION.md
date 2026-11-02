@@ -1,5 +1,24 @@
 # Verification history
 
+## Corrected size-preserving candidate 0.5.1 — 2026-11-02
+
+The earlier scale-based sharing below is superseded. Different dimensions must
+stay independent within the user tolerance; output placement singular values
+are unchanged (observed maximum error 2.22e-16 across all 26,400 placements).
+Context 7 invalidates prior instance grouping. Full real conversion plus focused
+USD/Blender imports passed in 4.2.14 and 5.2.3: 4,281 prototypes at 0.1 mm;
+panels 5748745/6497161 share despite 12/20 triangles; 22 mm width differences and
+different heights remain separate; filtered floor retains 1,006 triangles.
+
+223 pure tests passed, one Windows privilege skip. New regression fixtures cover
+extra coplanar edges, a valid T-junction, missing/overlapping faces, a 20 mm hole
+in a 100 m face, textured UV preservation, rotated source-local coordinates and
+nonuniform world-scale tolerance amplification. Rectangle boundary coverage is
+proved with directed sub-edge cancellation; dimensions use a bounded 3D index.
+No native Revit launch or new Revit-version coverage is claimed for Python-only fixes.
+
+## Historical scale-based candidate — superseded
+
 ## Local candidate 0.5.1 — 2026-11-02, validation in progress
 
 - Conversion context 6 includes local-pivot compensation, unused-UV handling for

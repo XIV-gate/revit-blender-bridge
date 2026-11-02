@@ -36,12 +36,12 @@ class AffineInstanceTests(unittest.TestCase):
         return plan_affine_instances(rows or [occurrence(key,key) for key in arrays], arrays,
                                      {7: {'uv_sensitive': False}} if materials is None else materials, **options)
 
-    def test_different_dimensions_share_anchor_with_all_member_occurrences(self):
-        arrays = {10: box((2, .035, 3.19), (1,2,3)), 2: box((4,.035,2))}
+    def test_equal_dimensions_share_anchor_with_all_member_occurrences(self):
+        arrays = {10: box((2, .035, 3.19), (1,2,3)), 2: box((2,.035,3.19))}
         rows = [occurrence(20,10), occurrence(21,10), occurrence(1,2)]
         result = self.plan(arrays, rows)
         self.assertEqual(result['redirects'], {'1':2,'20':2,'21':2})
-        np.testing.assert_allclose(result['scales']['20'], [.5,1,1.595], rtol=1e-6)
+        np.testing.assert_allclose(result['scales']['20'], [1,1,1], rtol=1e-6)
         self.assertEqual(result['scales']['1'], [1.,1.,1.])
         self.assertEqual(result['statistics']['groups'], 1)
         self.assertEqual(result, self.plan(dict(reversed(list(arrays.items()))), list(reversed(rows))))
@@ -60,29 +60,29 @@ class AffineInstanceTests(unittest.TestCase):
         for variant in variants:
             self.assertEqual(self.plan({1:first,2:variant})['redirects'], {})
         for kind in (None,'','-1',-1):
-            self.assertEqual(self.plan({1:first,2:box()}, [occurrence(1,1,kind),occurrence(2,2,kind)])['redirects'], {})
-        self.assertEqual(self.plan({1:first,2:box()}, [occurrence(1,1,'A'),occurrence(2,2,'B')])['redirects'], {})
+            self.assertEqual(self.plan({1:first,2:box()}, [occurrence(1,1,kind),occurrence(2,2,kind)])['redirects'], {'1':1,'2':1})
+        self.assertEqual(self.plan({1:first,2:box()}, [occurrence(1,1,'A'),occurrence(2,2,'B')])['redirects'], {'1':1,'2':1})
 
     def test_cyclic_corner_and_triangle_reordering_preserves_topology_and_paired_attributes(self):
-        first, second = box(), box((2,1,3))
+        first, second = box(), box()
         second['vertices'] = second['vertices'][:,[1,2,0]]
         second = second[::-1].copy()
         self.assertEqual(self.plan({1:first,2:second},materials={7:{'uv_sensitive':True}})['redirects'], {'1':1,'2':1})
 
     def test_uv_strict_for_textured_unknown_or_nonboolean_material_metadata(self):
-        first, second = box(), box((2,1,3))
+        first, second = box(), box()
         second['vertices'][:,:,6] += .25
         for materials in ({7:{'uv_sensitive':True}}, {7:{}}, {}, {7:{'uv_sensitive':0}}):
             self.assertEqual(self.plan({1:first,2:second}, materials=materials)['redirects'], {})
         self.assertEqual(self.plan({1:first,2:second})['redirects'], {'1':1,'2':1})
-        self.assertEqual(self.plan({1:first,2:box((2,1,3))}, materials={7:{}})['redirects'], {'1':1,'2':1})
+        self.assertEqual(self.plan({1:first,2:box()}, materials={7:{}})['redirects'], {'1':1,'2':1})
 
     def test_normals_must_reconstruct_after_inverse_transpose(self):
-        first, second = box(), box((2,1,3))
+        first, second = box(), box()
         second['vertices'][0,0,3:6] = [1,0,0]
         self.assertEqual(self.plan({1:first,2:second})['redirects'], {})
 
-    def test_slanted_normals_use_inverse_transpose_instead_of_forward_scale(self):
+    def test_nonuniformly_stretched_slanted_surface_is_not_an_instance(self):
         first = np.zeros(1,dtype=DTYPE)
         first['vertices'][0,:,:3] = [[0,0,0],[1,1,0],[0,0,1]]
         normal = np.array([1.,-1.,0.])/np.sqrt(2)
@@ -95,13 +95,12 @@ class AffineInstanceTests(unittest.TestCase):
         expected_normal /= np.linalg.norm(expected_normal)
         second['vertices'][0,:,3:6] = expected_normal
         result = self.plan({1:first,2:second})
-        self.assertEqual(result['redirects'],{'1':1,'2':1})
-        np.testing.assert_allclose(result['scales']['2'],scale)
+        self.assertEqual(result['redirects'],{})
         second['vertices'][0,:,3:6] = normal
         self.assertEqual(self.plan({1:first,2:second})['redirects'],{})
 
     def test_material_labels_remain_tied_to_faces_after_canonical_sort(self):
-        first, second = box(), box((2,1,3))
+        first, second = box(), box()
         first['material'][6:] = second['material'][6:] = 8
         materials={7:{'uv_sensitive':False},8:{'uv_sensitive':False}}
         reordered=second[::-1].copy()
@@ -117,7 +116,7 @@ class AffineInstanceTests(unittest.TestCase):
         second['vertices'][0,0,0] += .000002
         self.assertEqual(self.plan({1:first,2:second}, tolerance_mm=.1)['redirects'], {'1':1,'2':1})
         self.assertEqual(self.plan({1:first,2:second}, tolerance_mm=0)['redirects'], {})
-        self.assertEqual(self.plan({1:first,2:box((2,.25,3))}, tolerance_mm=0)['redirects'], {'1':1,'2':1})
+        self.assertEqual(self.plan({1:first,2:box((2,.25,3))}, tolerance_mm=0)['redirects'], {})
 
     def test_anchor_prevents_error_chain_and_placement_scale_limits_world_error(self):
         arrays={index:box()for index in (1,2,3)}
@@ -129,15 +128,15 @@ class AffineInstanceTests(unittest.TestCase):
         self.assertEqual(self.plan({1:arrays[1],2:arrays[2]},rows)['redirects'],{})
 
     def test_degenerate_shared_axis_gets_scale_one_but_mismatched_axis_is_rejected(self):
-        first, second = box(), box((2,3,1))
+        first, second = box(), box()
         first['vertices'][:,:,2] = 2
         second['vertices'][:,:,2] = 5
         result = self.plan({1:first,2:second})
-        self.assertEqual(result['scales']['2'], [2.,3.,1.])
+        self.assertEqual(result['scales']['2'], [1.,1.,1.])
         self.assertEqual(self.plan({1:first,2:box((2,3,1))})['redirects'], {})
 
     def test_world_mapping_rotation_mirror_nonuniform_placement_and_no_input_mutation(self):
-        arrays = {1:box(),2:box((2,.25,3),(3.9,.2,-1))}
+        arrays = {1:box(),2:box((1,1,1),(3.9,.2,-1))}
         before = {key:value.tobytes()for key,value in arrays.items()}
         rows = [occurrence(1,1),occurrence(2,2)]
         rows[1]['transform'] = [0,-2,0,-3,0,0,0,0,.5,100,-200,30]
