@@ -28,6 +28,13 @@
   Preferences. Stable 0.5.0 → 0.5.3 → 0.5.0 installation/rollback passes in
   isolated Blender 5.2. Existing frozen loaders and registration remain unchanged.
 - ZIP SHA256: 9a050298d4b137cad29c4765fdf680b95d5739195230238f0542e07a25cd0a45.
+- Post-publication anonymous updater/download validation passes in both Blender
+  4.2.14 and 5.2.3: Early Access selects 0.5.3, public asset SHA256 matches,
+  and latest stable remains 0.5.0. Reviewer found no P1/P2 issues.
+- Owned native test processes exited; the user's original Revit process was
+  left running. The two large generated RVT copies (about 554 MiB combined)
+  were removed after verification; reports, subset export, isolated profiles
+  and small fixtures remain in the approved project test area for reproduction.
 
 ## 0.5.2 Early Access — 2026-11-03
 
