@@ -20,7 +20,7 @@ class TextLayoutTests(unittest.TestCase):
         self.assertTrue(all(proportional(line) <= 170 for line in narrow))
 
     def test_paths_and_long_unicode_tokens_are_never_lost_or_clipped(self):
-        path = 'C:\\Users\\Denis Lukinykh\\ОченьДлинноеНазваниеБезПробелов.rvt'
+        path = 'C:\\Users\\Demo User\\ОченьДлинноеНазваниеБезПробелов.rvt'
         lines = pixel_wrap(path, 105, proportional)
         self.assertEqual(''.join(lines).replace(' ', ''), path.replace(' ', ''))
         self.assertTrue(all(proportional(line) <= 105 for line in lines))
