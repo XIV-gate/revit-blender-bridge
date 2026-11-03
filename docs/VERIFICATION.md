@@ -1,5 +1,41 @@
 # Verification history
 
+## 0.5.2 Early Access — 2026-11-03
+
+- Three import layouts: OBJECTS / INSTANCES / FAMILY. FAMILY concatenates raw
+  transformed geometry in the external converter before Blender, with no weld or
+  bpy join. Chunk limit 1,000,000 triangles; 50,000,000 total expansion limit and
+  available-RAM preflight. The memory estimate is not a peak-use guarantee.
+- 236 pure tests passed, one Windows privilege-dependent skip. Host checks passed
+  in Blender 4.2.14 and 5.2.3: mode migration, source face-index/table/range transfer,
+  source-element Edit Mode selection, FAMILY subset/restore and all-mode changes
+  through a real converter subprocess and validated raw snapshot without Revit.
+- Multi-material face assignments, actual Blender loop UVs, world custom normals
+  and mirrored winding are checked per face; packed texture bytes and decoded
+  pixels match the fixture. Unknown family fallback uses stable native type ID;
+  label renames preserve group identity. No native C# function changed; all six
+  metadata-only workers compile as 0.5.2.0 with the unchanged ABI-1 loaders.
+- Blender 5.2 synthetic benchmark: 73,133 placements, 183,000 triangles became ten
+  family meshes. Conversion 5.776 s; Blender import 0.457 s. Blender 4.2 replay:
+  6.438 s / 0.656 s. Independent-instances baseline was stopped by the external
+  180 s process limit before conversion completed; no import time is inferred.
+- Blender 5.2 real-cache benchmark: 26,400 placements / 7,283,485 output triangles
+  became 88 meshes in 82 families (six extra chunks). Conversion 24.654 s; import
+  3.294 s. All raw inputs retain SHA256. Revit opening/export are excluded from
+  these times. The 803 MB T1 RVT from the screenshots was not supplied locally.
+- Previous UI fixture refreshed cached modules after register to exercise the
+  actually registered callbacks; the existing manual-ZIP reload behavior had made
+  its earlier references stale. No production selection behavior was weakened.
+- Deep-job-cache replay reproduced a Windows MAX_PATH failure caused by repeating
+  the long destination filename in its temporary name. A short exclusive UUID
+  temporary fixes that case; full mode/subset/restore replay passes in both hosts.
+- Final ZIP SHA256: 96682b423d60352b8c84bf977dafe6ee6d65f5aa6f4a7badd31b58b1bdba40f8.
+  Installation passed in 4.2/5.2, actual 0.5.0 → 0.5.2 → 0.5.0 switching passed,
+  and the 0.4.7 validator, all six frozen loaders, pinning and rollback passed.
+- Public 0.5.1 was published at tag 9c4bbde with ZIP SHA256
+  f5cdf0b6fd567cd9fe37758fe9e3439ac0abd0f363b1b7ec95629a5e502a5900;
+  anonymous public download and 0.5.0 → 0.5.1 → 0.5.0 installation passed.
+
 ## Corrected size-preserving candidate 0.5.1 — 2026-11-02
 
 The earlier scale-based sharing below is superseded. Different dimensions must
