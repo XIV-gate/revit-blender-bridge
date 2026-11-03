@@ -16,6 +16,7 @@ from .core.launcher import WorkerProcess
 from .core.revit_versions import inspect_revit
 from .core.reporting import report_entries, raw_values
 from .core.diagnostics import Timeline
+from .core.import_modes import settings_mode
 
 
 def worker_path(props=None):
@@ -67,6 +68,7 @@ class Runtime:
         self.started = 0
         self.converter = None
         self.conversion_response = None
+        self.conversion_progress = None
         self.converted_usd = None
         self.pending_options = {}
         self.worker_exe = ''
@@ -232,7 +234,7 @@ def export_logs(scene, target):
     if STATE.scene == scene and STATE.file_root:
         # A cache hit can reference a different, verified job's output revision.
         directories.append(STATE.file_root.parent.parent)
-    options = {name: getattr(props, name) for name in ('detail_level', 'preserve_instances', 'use_revit_instances', 'instance_tolerance_mm',
+    options = {name: getattr(props, name) for name in ('detail_level', 'preserve_instances', 'import_mode', 'use_revit_instances', 'instance_tolerance_mm',
         'import_materials', 'import_textures', 'pack_images', 'center_model', 'reuse_export_cache', 'filter_remote_geometry')}
     try:
         revit = inspect_revit(bpy.path.abspath(props.revit_exe))
@@ -425,14 +427,15 @@ def begin_export(scene, *, force_refresh=False):
     source_hash = source_sha256(source)
     STATE.pending_snapshot_context = json.dumps(dict(format='native_family_v1', source=str(source), sha256=source_hash,
         exe=os.path.normcase(str(Path(bpy.path.abspath(props.revit_exe)).resolve())), detail=props.detail_level), sort_keys=True)
-    STATE.pending_context = json.dumps(dict(format=7, source=str(source), sha256=source_hash,
+    import_mode=settings_mode(props)
+    STATE.pending_context = json.dumps(dict(format=8, source=str(source), sha256=source_hash,
         exe=os.path.normcase(str(Path(bpy.path.abspath(props.revit_exe)).resolve())),
-        detail=props.detail_level, instances=props.preserve_instances, materials=props.import_materials,
+        detail=props.detail_level, instances=import_mode!='OBJECTS', import_mode=import_mode, materials=props.import_materials,
         textures=props.import_textures, pack=props.pack_images, centered=props.center_model,
         native_instances=props.use_revit_instances, instance_tolerance_mm=props.instance_tolerance_mm,
         filter_remote_geometry=props.filter_remote_geometry), sort_keys=True)
     STATE.pending_selected_ids = ids
-    STATE.pending_options = {'preserve_instances': props.preserve_instances, 'materials': props.import_materials,
+    STATE.pending_options = {'preserve_instances': import_mode!='OBJECTS', 'import_mode':import_mode, 'materials': props.import_materials,
                             'textures': props.import_textures, 'pack_images': props.pack_images,
                             'center_model': props.center_model, 'instance_tolerance_mm': props.instance_tolerance_mm,
                             'use_revit_instances': props.use_revit_instances,
@@ -453,7 +456,7 @@ def begin_export(scene, *, force_refresh=False):
             try:
                 available = set(json.loads(roots[0].get(AVAILABLE_IDS, roots[0].get(SELECTION, '[]'))))
                 added = ids - available
-                if added and props.origin_valid:
+                if added and props.origin_valid and import_mode!='FAMILY':
                     STATE.delta_ids = added
             except (ValueError, TypeError):
                 pass  # Unknown metadata requires a complete source refresh.
@@ -527,7 +530,10 @@ def _start_conversion(manifest):
         raise FileNotFoundError('Не найден встроенный Python Blender: ' + str(python_exe))
     command = [str(python_exe), '-m', 'xivgate_revit_bridge.convert_cli', '--manifest', str(manifest),
                '--target', str(target), '--response', str(response)]
+    STATE.conversion_progress=target.with_suffix('.progress.json')
+    command.extend(['--progress',str(STATE.conversion_progress)])
     options = STATE.pending_options
+    command.extend(['--import-mode',options.get('import_mode','INSTANCES')])
     if STATE.conversion_selection_ids is not None:
         from .core.jobs import atomic_write_json
         selection = target.with_suffix('.selection.json')
@@ -609,11 +615,15 @@ def _apply_import():
         raw_values(props.warnings) + ['Недоступно изображение: ' + path for path in result['missing_images']]))
     props.result_placements = result['placements']
     props.result_prototypes = result['prototypes']
+    props.result_source_placements = result.get('source_placements',result['placements'])
     STATE.action = None
     STATE.converter = None
     STATE.force_refresh = False
     STATE.force_scan_done = False
-    _message('DONE', f"Импортировано: {result['placements']} размещений, {result['prototypes']} прототипов.", progress=1)
+    summary=(f"Импортировано: {props.result_source_placements} элементов → {result['placements']} объектов."
+             if STATE.pending_options.get('import_mode')=='FAMILY' else
+             f"Импортировано: {result['placements']} объектов, {result['prototypes']} сеток.")
+    _message('DONE', summary, progress=1)
 
 
 def _fallback_full(message):
@@ -649,6 +659,11 @@ def tick():
         if STATE.action == 'convert':
             code = STATE.converter.poll()
             if code is None:
+                status=read_json(STATE.conversion_progress) if STATE.conversion_progress else None
+                if isinstance(status,dict) and isinstance(status.get('message'),str):
+                    fraction=status.get('progress',0)
+                    if type(fraction) in (int,float) and 0<=fraction<=1:
+                        _message('CONVERTING',status['message'][:500],busy=True,progress=.45+.4*fraction)
                 return 0.25
             response = read_json(STATE.conversion_response)
             if code != 0 or not response or not response.get('success'):

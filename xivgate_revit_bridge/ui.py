@@ -15,11 +15,29 @@ from .core.catalog import initial_selection
 from .core.selection_view import group_state, matches, exclusion_summary
 from .core.reporting import raw_values
 from .core.text_layout import pixel_wrap
+from .core.import_modes import settings_mode
 
 
 _SYNCING = False
 _RELEASE_ITEMS = []
 _REVIT_ITEMS = []
+_MODE_SYNC = set()
+
+
+def import_mode_changed(props, context):
+    key=props.as_pointer()
+    if key in _MODE_SYNC: return
+    _MODE_SYNC.add(key)
+    try: props.preserve_instances=settings_mode(props)!='OBJECTS'
+    finally: _MODE_SYNC.discard(key)
+
+
+def legacy_instances_changed(props, context):
+    key=props.as_pointer()
+    if key in _MODE_SYNC: return
+    _MODE_SYNC.add(key)
+    try: props.import_mode='INSTANCES' if props.preserve_instances else 'OBJECTS'
+    finally: _MODE_SYNC.discard(key)
 
 
 def _text_metrics(context, width=None, inset=0):
@@ -278,7 +296,12 @@ class RBB_Settings(bpy.types.PropertyGroup):
     reuse_export_cache: BoolProperty(name='Использовать проверенный кэш выгрузки', default=True)
     catalog_worker_key: StringProperty()
     addin_folder: StringProperty(name='Каталог подключения Revit', subtype='DIR_PATH', description='Обычно определяется автоматически; нужен только при нестандартной установке')
-    preserve_instances: BoolProperty(name='Сохранять инстансы', default=True, description='Редактируемые Mesh-объекты с общими данными, как Alt+D')
+    preserve_instances: BoolProperty(default=True, update=legacy_instances_changed)
+    import_mode: EnumProperty(name='Объекты', description='Структура результата: независимые объекты, редактируемые инстансы или семейства, объединённые до импорта в Blender', items=[
+        ('OBJECTS','Отдельные объекты','Каждый элемент — отдельный объект с независимой сеткой'),
+        ('INSTANCES','Отдельные объекты-инстансы','Каждый элемент — отдельный редактируемый объект; одинаковая геометрия использует общую сетку'),
+        ('FAMILY','Объединить по семействам','Конвертер объединяет геометрию семейства до Blender. Меньше объектов; вершины не сшиваются, материалы и UV сохраняются')],
+        default='INSTANCES', update=import_mode_changed)
     filter_remote_geometry: BoolProperty(name='Убирать дальние части', default=True,
         description='Убирать отдельные несвязанные части перекрытий далеко от здания. Основная часть сохраняется. Выключите для восстановления из кэша')
     use_revit_instances: BoolProperty(name='Учитывать данные Revit', default=True, description='Учитывать нативные варианты Revit, разные локальные начала и неиспользуемые UV нетекстурных материалов. Размеры, нормали и текстурные UV проверяются; мировое размещение сохраняется')
@@ -333,6 +356,7 @@ class RBB_Settings(bpy.types.PropertyGroup):
     result_collection: StringProperty()
     result_placements: IntProperty()
     result_prototypes: IntProperty()
+    result_source_placements: IntProperty()
     warning_count: IntProperty()
     warnings: CollectionProperty(type=RBB_Warning)
     warning_index: IntProperty()
@@ -950,10 +974,10 @@ def draw_settings(layout, props):
 
     options = layout.box()
     options.label(text='Настройки импорта', icon='IMPORT')
-    for field in ('preserve_instances', 'import_materials', 'import_textures',
+    for field in ('import_mode', 'import_materials', 'import_textures',
                   'pack_images', 'center_model', 'filter_remote_geometry', 'detail_level'):
         options.prop(props, field)
-        if field == 'preserve_instances' and props.preserve_instances:
+        if field == 'import_mode' and settings_mode(props)=='INSTANCES':
             row = options.column(align=True)
             row.prop(props, 'use_revit_instances')
             row.prop(props, 'instance_tolerance_mm')
@@ -1012,7 +1036,13 @@ class RBB_PT_panel(bpy.types.Panel):
         action.operator('xivgate_rbb.import_selected', text='Обновить импорт' if props.import_id else 'Импортировать выбранное', icon='IMPORT')
         if props.result_collection:
             _wrapped(layout, props.result_collection, context, icon='OUTLINER_COLLECTION')
-            _wrapped(layout, f'{props.result_placements} размещений · {props.result_prototypes} прототипов', context)
+            if props.result_source_placements>props.result_placements:
+                _wrapped(layout, f'{props.result_source_placements} элементов → {props.result_placements} объектов', context)
+            else:
+                _wrapped(layout, f'{props.result_placements} объектов · {props.result_prototypes} сеток', context)
+            active=context.active_object
+            if active and active.type=='MESH' and 'revit:source_table' in active.data:
+                layout.operator('xivgate_rbb.select_source_faces',icon='FACESEL')
             rename = layout.row()
             rename.enabled = not props.busy and not runtime.MAINTENANCE
             rename.operator('xivgate_rbb.readable_names', icon='SORTALPHA')
@@ -1051,8 +1081,33 @@ def _load_post(*args):
     for scene in bpy.data.scenes:
         if scene.library is not None:
             continue
+        props=scene.xivgate_revit_bridge
+        if not props.is_property_set('import_mode'):
+            props.import_mode='INSTANCES' if props.preserve_instances else 'OBJECTS'
         sync_groups(scene.xivgate_revit_bridge)
         align_scene_previews(scene.xivgate_revit_bridge)
+
+
+class RBB_OT_select_source_faces(bpy.types.Operator):
+    bl_idname='xivgate_rbb.select_source_faces'
+    bl_label='Выделить исходный элемент'
+    bl_description='В режиме редактирования выберите одну грань: кнопка выделит все грани того же исходного элемента Revit в текущем объединённом объекте'
+    bl_options={'REGISTER','UNDO'}
+
+    @classmethod
+    def poll(cls,context):
+        obj=context.active_object
+        return bool(context.mode=='EDIT_MESH' and obj and obj.type=='MESH' and 'revit:source_table' in obj.data)
+
+    def execute(self,context):
+        from .blender_provenance import select_source_faces
+        try:
+            context.tool_settings.mesh_select_mode=(False,False,True)
+            result=select_source_faces(context.active_object)
+        except (ValueError,KeyError,TypeError) as error:
+            self.report({'ERROR'},str(error));return {'CANCELLED'}
+        self.report({'INFO'},f"Элемент Revit {result['element_id']}: {result['faces']} граней")
+        return {'FINISHED'}
 
 
 def _initialize_tree():
@@ -1070,7 +1125,7 @@ CLASSES = (RBB_Element, RBB_Group, RBB_TreeRow, RBB_Warning, RBB_Settings, RBB_U
            RBB_OT_choose_revit,
            RBB_OT_toggle_group, RBB_OT_inspect_group, RBB_OT_clear_scope, RBB_OT_copy_report_details, RBB_OT_export_logs, RBB_OT_readable_names,
            RBB_OT_setup, RBB_OT_scan, RBB_OT_import, RBB_OT_select, RBB_OT_cancel,
-           RBB_OT_show_worker, RBB_OT_cache, RBB_OT_toggle_preview, RBB_OT_check_update, RBB_OT_install_update, RBB_PT_panel)
+           RBB_OT_show_worker, RBB_OT_cache, RBB_OT_toggle_preview, RBB_OT_check_update, RBB_OT_install_update, RBB_OT_select_source_faces, RBB_PT_panel)
 
 
 def register():

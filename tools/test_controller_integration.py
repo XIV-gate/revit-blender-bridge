@@ -85,6 +85,9 @@ def wait_ready():
 
 
 xivgate_revit_bridge.register()
+# Registration may refresh cached children after a manual ZIP update.
+from xivgate_revit_bridge import ui, runtime
+assert ui.RBB_Settings.is_registered
 scene = bpy.context.scene
 props = scene.xivgate_revit_bridge
 source = WORK / 'test-only-source.rvt'
@@ -128,7 +131,7 @@ with patch.object(runtime, 'WorkerProcess', TestWorker), patch.object(runtime, '
     runtime.begin_export(scene)
     assert runtime.STATE.action == 'convert', 'Old matcher revision must not use the selection-only no-op'
     wait_ready()
-    assert json.loads(props.import_context_json)['format'] == 7
+    assert json.loads(props.import_context_json)['format'] == 8
     assert props.import_id == identity and props.result_placements == 3
     assert props.import_manifest_path == snapshot
     assert len(TestWorker.export_requests) == exports and len(TestWorker.started_executables) == starts

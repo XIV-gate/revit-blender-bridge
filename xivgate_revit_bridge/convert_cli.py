@@ -21,8 +21,19 @@ def main():
     parser.add_argument('--no-revit-instances', action='store_true')
     parser.add_argument('--keep-remote-components', action='store_true')
     parser.add_argument('--selection')
+    parser.add_argument('--import-mode', choices=('OBJECTS','INSTANCES','FAMILY'), default='INSTANCES')
+    parser.add_argument('--progress')
     args = parser.parse_args()
     try:
+        def progress(value):
+            if args.progress:
+                from .core.jobs import atomic_write_json
+                try:
+                    atomic_write_json(Path(args.progress),value)
+                except OSError:
+                    # Windows can briefly deny rename while the UI reads it.
+                    # Status is optional; geometry and the final response are not.
+                    pass
         selection = None
         if args.selection:
             selection = json.loads(Path(args.selection).read_text(encoding='utf-8-sig'))['include_ids']
@@ -30,7 +41,8 @@ def main():
             include_textures=not args.no_textures, center_model=not args.source_origin, source_offset=args.offset,
             match_instances=not args.no_instance_matching, instance_tolerance_mm=args.instance_tolerance_mm,
             use_revit_instances=not args.no_revit_instances,
-            filter_remote_geometry=not args.keep_remote_components, selected_element_ids=selection)
+            filter_remote_geometry=not args.keep_remote_components, selected_element_ids=selection,
+            import_mode=args.import_mode, progress_callback=progress if args.progress else None)
         response = {'success': True, **result}
     except Exception as error:
         response = {'success': False, 'error': str(error), 'details': traceback.format_exc()}

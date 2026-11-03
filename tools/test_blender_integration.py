@@ -24,6 +24,9 @@ from xivgate_revit_bridge.conversion import build_usd
 from fixture_cache import write_fixture
 
 xivgate_revit_bridge.register()
+# Registration may refresh cached children after a manual ZIP update.
+from xivgate_revit_bridge import ui, runtime
+assert ui.RBB_Settings.is_registered
 props = bpy.context.scene.xivgate_revit_bridge
 props.busy = True
 for identifier, category, recommendation in (('11', 'windows', 'include'), ('12', 'windows', 'review'), ('13', 'walls', 'exclude')):
@@ -42,7 +45,7 @@ for category in ('windows', 'walls'):
 row = props.worksets.add();row.group_kind = 'workset';row.group_id = 'facade';row.name = 'Фасады'
 props.busy = False
 ui.sync_groups(props)
-assert props.selected_count == 2
+assert props.selected_count == 2, (props.selected_count, [(row.element_id,row.selected)for row in props.elements], ui._SYNCING)
 props.categories[1].selected = True
 assert props.selected_count == 3
 props.worksets[0].selected = False

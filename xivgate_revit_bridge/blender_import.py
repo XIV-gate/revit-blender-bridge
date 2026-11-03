@@ -18,6 +18,7 @@ GEOMETRY_IDS = 'xivgate_rbb_geometry_element_ids'
 CATEGORY = 'xivgate_rbb_category'
 AVAILABLE_IDS = 'xivgate_rbb_available_element_ids'
 AVAILABLE_GEOMETRY_IDS = 'xivgate_rbb_available_geometry_ids'
+IMPORT_MODE = 'xivgate_rbb_import_mode'
 STASH_FLAG = 'xivgate_rbb_stash'
 GENERATED_NAME = 'xivgate_rbb_generated_name'
 USER_NAME = 'xivgate_rbb_user_name'
@@ -169,6 +170,12 @@ def apply_selection(import_id, selected_element_ids, *, stash_deselected=False):
         return None
     if any(scene != bpy.context.scene and root in scene.collection.children_recursive for scene in bpy.data.scenes):
         return None
+    if root.get(IMPORT_MODE)=='FAMILY':
+        from .core.import_modes import grouped_selection_changed
+        try:
+            if grouped_selection_changed('FAMILY',_stored_ids(root,SELECTION,set()),selected):
+                return None
+        except (TypeError,ValueError):return None
     revision = root.get(REVISION)
     placements = [obj for obj in root.all_objects if obj.get(OWNER) == import_id
                   and obj.get(REVISION) == revision and 'revit:id' in obj]
@@ -300,6 +307,10 @@ def import_result(usd_path, *, import_id=None, preserve_instances=True, pack_ima
     stage = Usd.Stage.Open(str(source))
     if not stage:
         raise ValueError('Не удалось прочитать результат Revit')
+    mode_attribute=stage.GetPrimAtPath('/World').GetAttribute('revit:import_mode')
+    import_mode=str(mode_attribute.Get()) if mode_attribute and mode_attribute.Get() else ('INSTANCES' if preserve_instances else 'OBJECTS')
+    source_attribute=stage.GetPrimAtPath('/World').GetAttribute('revit:source_placements')
+    source_placements=int(source_attribute.Get()) if source_attribute and source_attribute.Get() is not None else None
     prims = {str(prim.GetAttribute('revit:id').Get()): prim for prim in stage.Traverse()
              if prim.IsInstance() and prim.HasAttribute('revit:id')}
     if not prims:
@@ -366,6 +377,7 @@ def import_result(usd_path, *, import_id=None, preserve_instances=True, pack_ima
         collection.name = root_name
         desired_names[collection] = _preferred_name(old_roots[0].name if len(old_roots) == 1 else '', root_name)
         collection[ROOT_FLAG] = True
+        collection[IMPORT_MODE] = import_mode
         collection['xivgate_rbb_source'] = source_path
         if root:
             root.matrix_world = Matrix.Identity(4)
@@ -412,6 +424,9 @@ def import_result(usd_path, *, import_id=None, preserve_instances=True, pack_ima
             signature = geometry_signature.Get() if geometry_signature else None
             if isinstance(signature, str) and re.fullmatch(r'[0-9a-f]{64}', signature):
                 replacement.data['revit:geometry_signature'] = signature
+            if import_mode=='FAMILY':
+                from .blender_provenance import attach_family_provenance
+                attach_family_provenance(replacement,prim,mesh_prim)
             replacement.parent = root
             target = target @ member.matrix_local
             replacement.matrix_world = target
@@ -529,6 +544,7 @@ def import_result(usd_path, *, import_id=None, preserve_instances=True, pack_ima
         return {'import_id': identity, 'revision': revision, 'collection': collection.name,
                 'source_offset': list(stage.GetPrimAtPath('/World').GetAttribute('revit:source_offset_metres').Get()),
                 'placements': len(expected), 'prototypes': len({str(prim.GetPrototype().GetPath()) for prim in prims.values()}),
+                'source_placements': source_placements if source_placements is not None else len(expected), 'import_mode':import_mode,
                 'max_transform_error': error, 'packed_images': packed, 'missing_images': missing}
     except Exception:
         # All our new objects are tagged; also cover failures before tagging completes.
@@ -586,6 +602,12 @@ def merge_result(usd_path, *, import_id, selected_element_ids, final_selection_i
     if len(roots) != 1 or not added or not added.issubset(final):
         return None
     root = roots[0]
+    if root.get(IMPORT_MODE)=='FAMILY':return None
+    from pxr import Usd
+    incoming=Usd.Stage.Open(str(Path(usd_path).resolve()))
+    if incoming:
+        mode=incoming.GetPrimAtPath('/World').GetAttribute('revit:import_mode')
+        if mode and mode.Get()=='FAMILY':return None
     if root not in bpy.context.scene.collection.children_recursive:
         return None
     revision = root.get(REVISION)

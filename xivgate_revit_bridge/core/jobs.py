@@ -26,7 +26,9 @@ def contained_path(root, value):
 
 def atomic_write_json(path, value):
     path = Path(path)
-    temporary = path.with_name('.' + path.name + '.' + uuid.uuid4().hex + '.tmp')
+    # Do not repeat a long revision filename in its atomic-write temporary.
+    # Blender's Windows process can otherwise hit MAX_PATH inside a valid job.
+    temporary = path.with_name('.agr-' + uuid.uuid4().hex + '.tmp')
     try:
         with temporary.open('x', encoding='utf-8', newline='\n') as stream:
             json.dump(value, stream, ensure_ascii=False, allow_nan=False)
