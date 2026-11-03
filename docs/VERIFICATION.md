@@ -32,6 +32,9 @@
 - Final ZIP SHA256: 96682b423d60352b8c84bf977dafe6ee6d65f5aa6f4a7badd31b58b1bdba40f8.
   Installation passed in 4.2/5.2, actual 0.5.0 → 0.5.2 → 0.5.0 switching passed,
   and the 0.4.7 validator, all six frozen loaders, pinning and rollback passed.
+- Published as v0.5.2 at commit 26ed233, Early Access. After publication the actual
+  public ZIP was downloaded and validated anonymously through the updater in both
+  Blender 4.2.14 and 5.2.3. Stable/EA lists passed and Latest remains v0.5.0.
 - Public 0.5.1 was published at tag 9c4bbde with ZIP SHA256
   f5cdf0b6fd567cd9fe37758fe9e3439ac0abd0f363b1b7ec95629a5e502a5900;
   anonymous public download and 0.5.0 → 0.5.1 → 0.5.0 installation passed.
