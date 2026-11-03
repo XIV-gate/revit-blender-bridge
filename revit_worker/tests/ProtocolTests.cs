@@ -146,6 +146,17 @@ static class ProtocolTests
             using (var atomic = Protocol.Read(file)) Check(Protocol.String(atomic.RootElement, "name") == "Дверь", "atomic replacement complete");
             Check(Directory.GetFiles(root, Path.GetFileName(file) + ".*.pending").Length == 0, "pending files cleaned");
             string dialog = "Dialog_Revit_DocWarnDialog";
+            string optionalDialog = "TaskDialog_External_Tools_External_Tool_Failure";
+            string optionalMessage = "Cannot start external application \"Application Dynamo Player For Revit\". Autodesk.";
+            Check(WarningPolicy.DismissOptionalStartupFailure(true, true, true, false, optionalDialog, optionalMessage), "Dynamo startup failure may be closed in authenticated service startup");
+            Check(!WarningPolicy.DismissOptionalStartupFailure(false, true, true, false, optionalDialog, optionalMessage), "normal user Revit is untouched");
+            Check(!WarningPolicy.DismissOptionalStartupFailure(true, false, true, false, optionalDialog, optionalMessage), "unauthenticated startup is untouched");
+            Check(!WarningPolicy.DismissOptionalStartupFailure(true, true, false, false, optionalDialog, optionalMessage), "opening/exporting documents is untouched");
+            Check(!WarningPolicy.DismissOptionalStartupFailure(true, true, true, true, optionalDialog, optionalMessage), "optional startup dialog is only closed once");
+            foreach (string other in new[] { "TaskDialog_Trust", "TaskDialog_License", "TaskDialog_Repair", "", optionalDialog.ToLowerInvariant() })
+                Check(!WarningPolicy.DismissOptionalStartupFailure(true, true, true, false, other, optionalMessage), "nonexact dialog is never suppressed");
+            foreach (string other in new[] { "Application Dynamo Player For Revit", "\"Dynamo For Revit\"", "\"XIVgate Revit Blender Bridge\"", "\"Application Dynamo Player For Revit Extra\"", "" })
+                Check(!WarningPolicy.DismissOptionalStartupFailure(true, true, true, false, optionalDialog, other), "other or ambiguous application is never suppressed");
             Check(WarningPolicy.AcknowledgeDocumentWarning(true, true, true, true, false, dialog), "owned opening document warning allowed");
             Check(!WarningPolicy.AcknowledgeDocumentWarning(false, true, true, true, false, dialog), "inert application cannot acknowledge");
             Check(!WarningPolicy.AcknowledgeDocumentWarning(true, false, true, true, false, dialog), "unauthenticated operation cannot acknowledge");

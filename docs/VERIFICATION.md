@@ -1,5 +1,34 @@
 # Verification history
 
+## 0.5.3 Early Access — 2026-11-03
+
+- Reproduced the actual startup failure: the installed Dynamo Player selects
+  port 55000; Windows excludes 54961–55060. An independent localhost
+  HttpListener registration on 55000 returns NativeErrorCode 32.
+- Real Revit 2027 replay automatically closed exactly the identified Dynamo
+  Player startup failure, then scanned the supplied 2024 workshared model:
+  19,531 catalog elements and 32 selected exported placements. Original RVT
+  SHA256 unchanged. The exported subset imported into isolated Blender 5.2
+  as 32 editable Mesh placements / 8 shared Mesh data; transform error below
+  6e-8. This is a subset smoke test, not a full-model import benchmark.
+- After a final warning-deduplication adjustment, the exact packaged 2027
+  worker was replayed on the small native fixture: the same actual startup
+  failure was closed automatically, scan/export completed, warning persisted,
+  original SHA256 unchanged, and only the owned test process was closed.
+  Final worker SHA256: ec580677861c4ff72c0fd1b0ec5eeee1ca646dfcf572729fb19b3cde03a972a3.
+- All six worker variants compile; policy/protocol checks pass on .NET 4.8
+  (144 assertions), .NET 8 and .NET 10 (140 each). Normal user sessions,
+  unauthenticated requests, document operations, repeated dialogs, other
+  application names, trust/license/repair and nonexact IDs are rejected by
+  the optional-failure allowlist. Native host execution was Revit 2027 only.
+- 236 Python tests pass, one Windows privilege-dependent skip. Blender 4.2.14
+  and 5.2.3 UI tests verify waiting dialogs do not show a processing bar.
+  Runtime-error and controller integration checks pass in isolated Blender 5.2.
+  ZIP validation and isolated installation pass in both hosts without saving
+  Preferences. Stable 0.5.0 → 0.5.3 → 0.5.0 installation/rollback passes in
+  isolated Blender 5.2. Existing frozen loaders and registration remain unchanged.
+- ZIP SHA256: 9a050298d4b137cad29c4765fdf680b95d5739195230238f0542e07a25cd0a45.
+
 ## 0.5.2 Early Access — 2026-11-03
 
 - Three import layouts: OBJECTS / INSTANCES / FAMILY. FAMILY concatenates raw

@@ -1012,7 +1012,10 @@ class RBB_PT_panel(bpy.types.Panel):
         icon = 'ERROR' if props.status == 'ERROR' else 'QUESTION' if props.status == 'REQUIRES_ACTION' else 'INFO'
         _wrapped(box, props.message, context, icon=icon)
         if props.busy:
-            box.progress(factor=props.progress, type='BAR', text='Обработка модели')
+            if props.status == 'REQUIRES_ACTION':
+                box.label(text='Ожидание ответа в Revit', icon='PAUSE')
+            else:
+                box.progress(factor=props.progress, type='BAR', text='Обработка модели')
             row = box.row(align=True)
             row.operator('xivgate_rbb.cancel', icon='CANCEL')
             row.operator('xivgate_rbb.show_worker', icon='WINDOW')

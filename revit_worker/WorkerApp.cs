@@ -19,6 +19,9 @@ internal sealed class WorkerImplementation : IExternalApplication
     readonly List<string> warnings = new();
     readonly List<string> scanWarnings = new();
     readonly List<object> warningRecords = new();
+    readonly List<string> startupWarnings = new();
+    readonly List<object> startupWarningRecords = new();
+    bool optionalStartupFailureHandled;
     Document? document;
     string original = "", originalHash = "", sourceVersion = "";
     JsonElement active;
@@ -180,7 +183,9 @@ internal sealed class WorkerImplementation : IExternalApplication
     void Scan(UIApplication ui, JsonElement request)
     {
         scanReady = false; scanWarnings.Clear();
+        warnings.AddRange(startupWarnings);
         warningRecords.Clear();
+        warningRecords.AddRange(startupWarningRecords);
         CheckCancel(); Status("opening", "Подготовка безопасной копии RVT", 0.02);
         string source = Protocol.String(request, "source_rvt");
         if (!Compat.FullyQualified(source) || !File.Exists(source) || !string.Equals(Path.GetExtension(source), ".rvt", StringComparison.OrdinalIgnoreCase))
@@ -476,6 +481,25 @@ internal sealed class WorkerImplementation : IExternalApplication
                 using var pending = Protocol.Read(Path.Combine(root, "request.json"));
                 if (Protocol.Authenticated(pending.RootElement, token, session)) { active = pending.RootElement.Clone(); session ??= Protocol.String(active, "session_id"); }
             }
+            bool authenticatedStartup = active.ValueKind == JsonValueKind.Object && Protocol.Authenticated(active, token, session)
+                && Protocol.String(active, "action") == "scan";
+            bool startupOnly = !idlingSeen && !busy && document == null && seen.Count == 0;
+            if (e is TaskDialogShowingEventArgs && WarningPolicy.DismissOptionalStartupFailure(enabled,
+                authenticatedStartup, startupOnly, optionalStartupFailureHandled, e.DialogId, message)) {
+                bool accepted = e.OverrideResult((int)TaskDialogResult.Close);
+                if (accepted) {
+                    optionalStartupFailureHandled = true;
+                    CaptureWarning("optional_addin_startup", "dynamo_player_startup_failed",
+                        "Необязательный Dynamo Player не запустился. Диалог закрыт; импорт продолжится без него. " + message,
+                        "Warning", Array.Empty<string>(), "optional_addin_failure_closed");
+                    startupWarnings.Add(warnings[warnings.Count - 1]);
+                    startupWarningRecords.Add(warningRecords[warningRecords.Count - 1]);
+                    WriteWarningReport();
+                    Status("starting", "Dynamo Player недоступен; продолжается запуск импорта", 0);
+                    return;
+                }
+                Log("Optional Dynamo Player failure Close override was rejected; human action required.");
+            }
             if (WarningPolicy.AcknowledgeDocumentWarning(enabled, AuthenticatedOperation, busy, openingOwnedCopy, failureAbortReason.Length > 0, e.DialogId)) {
                 bool accepted = e.OverrideResult(1);
                 CaptureWarning("document_warning_dialog", e.DialogId,
@@ -490,7 +514,7 @@ internal sealed class WorkerImplementation : IExternalApplication
                 Status("requires_action", message, 0, e.DialogId);
             }
         } catch (Exception reportingError) { Log("Cannot report dialog: " + reportingError.Message); }
-        // The single exact document-warning allowlist above never applies to license, security or repair dialogs.
+        // Neither narrow allowlist applies to license, security, repair, or other add-in failures.
     }
     void Status(string state, string message, double progress, string? dialog = null) => Protocol.Atomic(Path.Combine(root, "status.json"),
         new { schema = 1, session_id = session, request_id = Protocol.String(active, "request_id"), state, message, progress, dialog_id = dialog });

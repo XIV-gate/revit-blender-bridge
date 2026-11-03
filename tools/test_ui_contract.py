@@ -2,6 +2,7 @@ import ast
 import os
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import bpy
 
@@ -21,5 +22,27 @@ for cls in tree.body:
         assert len(methods) == len(set(methods)), cls.name
 for name in ('RBB_OT_cache', 'RBB_OT_toggle_preview', 'RBB_OT_choose_revit', 'RBB_OT_scan'):
     assert hasattr(getattr(addon.ui, name), 'execute')
+
+class RecordingLayout:
+    def __init__(self):
+        self.calls = []
+
+    def __getattr__(self, name):
+        def record(*args, **kwargs):
+            self.calls.append((name, kwargs))
+            return SimpleNamespace() if name == 'operator' else self
+        return record
+
+props = bpy.context.scene.xivgate_revit_bridge
+props.busy = True
+for status in ('REQUIRES_ACTION', 'SCANNING'):
+    props.status = status
+    layout = RecordingLayout()
+    addon.ui.RBB_PT_panel.draw(SimpleNamespace(layout=layout), bpy.context)
+    bars = [kwargs for name, kwargs in layout.calls if name == 'progress']
+    labels = [kwargs.get('text') for name, kwargs in layout.calls if name == 'label']
+    assert bool(bars) == (status != 'REQUIRES_ACTION'), (status, bars)
+    assert ('Ожидание ответа в Revit' in labels) == (status == 'REQUIRES_ACTION')
+props.busy = False
 addon.unregister()
 print('AGR_UI_CONTRACT passed', bpy.app.version_string)
