@@ -25,3 +25,26 @@ Recommendations: include, review, exclude. Review is selected by default. Defaul
 Geometry export: manifest.json and geometry.bin inside output_dir. Same schema as the verified pilot with new generic filenames. manifest: schema=1, units=metres, up=Z, source metadata, summary, prototypes, occurrences, materials, warnings. Prototype: id integer, offset, bytes, triangles, sha256. Each triangle uses 104 little-endian bytes: 3 vertices of 8 float32 (position XYZ, normal XYZ, UV), followed by int64 material key. Occurrence: id string, unique_id, name, category, category_id, workset, workset_id, prototype, decision, transform (12 values: basis X,Y,Z rows then translation in metres). Material table keyed by integer-as-string; values retain source IDs, name, RGB in sRGB, transparency 0..1, smoothness, appearance properties and any available copied texture paths. Textures reside below output_dir with relative manifest references. Preserve exact mesh/material signatures when deduplicating.
 
 The manifest is promoted only after binary/textures are complete. Never overwrite an existing successful revision; create a new output revision. Links not supported by a worker must be reported explicitly, never silently treated as exported.
+
+
+0.5.5 scan options add three independent booleans: `overwrite_source` (false),
+`reuse_prepared_model` (true), `keep_temporary_data` (true). Cache lookup may reuse
+older source content only with matching source identity, SDK/build and verified
+model hash. The identity is SHA-256 of the invariant-uppercase absolute source
+path; matching source/model content also permits safe unchanged-file relocation.
+Linked-mode prepared copies are not published to this cache.
+
+Source metadata additionally reports `prepared_sha256`, `prepared_source_sha256`,
+`prepared_utc`, `used_prepared_cache`, `source_replaced`. `sha256` tracks the
+selected original after any explicit successful replacement. A found prepared
+snapshot may differ from the current original by user choice; provenance stays
+explicit. Errors preserve Blender geometry; an explicitly requested original
+replacement can already have succeeded if a later export/import step fails.
+
+Source replacement is restricted to an authenticated scan with an explicit
+true overwrite flag. The worker never opens the original in Revit. It saves and
+verifies an owned current-version copy, checks the selected original, atomically
+replaces it with a uniquely named backup of the actually displaced file, and
+checks that backup hash. Concurrent pathname replacement restores/preserves the
+concurrent content; locked backups are reported rather than silently deleted.
+Automatic Blender cleanup requires successful import, shutdown ACK and exit 0.

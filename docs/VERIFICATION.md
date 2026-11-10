@@ -555,3 +555,37 @@ assembly version changed in C#.
   public release discovery and ZIP download/manifest verification passed in both
   Blender hosts. Downloaded 0.5.4 SHA-256:
   `3a06e7025f36ceaf0dd4209ba79687eb47bb76f56293236c6afae1f9162ee773`.
+
+
+## 0.5.5 Early Access — 2026-11-10
+
+- 251 pure Python tests completed, one privilege skip. Six Revit worker variants
+  compiled; 256 .NET Framework 4.8 / 252 .NET 8 and 10 protocol assertions passed.
+  Native application execution was Revit 2027.2 only; 2024–2026 remain SDK-build
+  and pure-protocol coverage rather than native application verification.
+- Isolated Blender 4.2.14 / 5.2.3 exercised all 16 flag combinations, unsaved-scene
+  model-owned paths, bitmap decoding after external retention, packing, discovery
+  of the installed Revit and the direct version-choice popup contract.
+- Controller regression runs use a real converter subprocess with a Revit I/O test
+  double. They cover delta imports, snapshot regrouping, source/host changes,
+  graceful shutdown, pack-on/off automatic cleanup and a simulated Revit crash
+  during conversion. Crash data survives; no Preferences or live .blend saved.
+- Nine tiny native runs exercised all eight overwrite/reuse/keep combinations
+  plus cache seed. Stale-source cases intentionally appended a marker to the
+  disposable original while using a valid prepared cache. Default operations
+  preserved source SHA; requested replacements matched the resulting source SHA.
+  After the final concurrent-save recovery change, fresh and stale-cache source
+  replacement were repeated with the final binary and keep-data disabled.
+- Source-replacement tests hold actual Windows locks, reject changed originals,
+  and test the atomic commit with an actual concurrent-version file replacing
+  the expected input. Displaced user content is restored; normal commits remove
+  their own transient backup. Additional concurrent content is preserved on error.
+- The final worker reused the prepared supplied 2019 model, read 226,815 catalog
+  elements in 65.4 seconds and exported eight windows. Original source SHA stayed
+  unchanged. No new 80-minute upgrade and no full-building import were performed.
+- Code review found/fixed shared-cache source substitution, linked-mode cache
+  contamination, cleanup after an unconfirmed worker exit and the atomic-save
+  pathname race. New source identity and model namespaces prevent cross-model reuse.
+- Candidate ZIP manifest validation, isolated installation/enabling, stable
+  0.5.0 → 0.5.5 → 0.5.0 transitions and Scene lifecycle tests passed in both hosts.
+  Frozen ABI 1 loader hashes remain unchanged.
