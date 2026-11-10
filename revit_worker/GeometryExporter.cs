@@ -36,6 +36,7 @@ internal sealed class GeometryExporter : IPhotoRenderContext
     bool unresolvedTextures;
     List<string>? textureFiles;
     long material = -1, triangles, visitedElements, materialCallbacks;
+    readonly int curveDetail;
     readonly HashSet<long> isolation = new();
     sealed class Piece
     {
@@ -50,8 +51,9 @@ internal sealed class GeometryExporter : IPhotoRenderContext
         public NativeInstancePolicy Native = null!;
     }
     sealed record Frame(long Id, Piece? Target);
-    GeometryExporter(Document doc, string output, string source, BinaryWriter binary, HashSet<long> selection, Func<bool> canceled, List<string> warnings)
+    GeometryExporter(Document doc, string output, string source, BinaryWriter binary, HashSet<long> selection, Func<bool> canceled, List<string> warnings, int curveDetail)
     {
+        this.curveDetail = curveDetail;
         this.doc = doc; this.output = output; sourceDirectory = Path.GetDirectoryName(source)!;
         this.binary = binary; this.selection = selection; this.canceled = canceled; this.warnings = warnings;
         transforms.Push(Transform.Identity);
@@ -115,12 +117,13 @@ internal sealed class GeometryExporter : IPhotoRenderContext
             }
         }
     }
-    public static void Run(Document doc, string output, HashSet<long> selection, object source, string original, string detail, Func<bool> canceled, List<string> warnings)
+    public static void Run(Document doc, string output, HashSet<long> selection, object source, string original, string detail, Func<bool> canceled, List<string> warnings, int curveDetail = 5)
     {
+        if(curveDetail<1 || curveDetail>15) throw new ArgumentOutOfRangeException(nameof(curveDetail));
         string manifest = Path.Combine(output, "manifest.json");
         if (File.Exists(manifest)) throw new IOException("Успешная ревизия уже существует.");
         using var data = new BinaryWriter(File.Open(Path.Combine(output, "geometry.bin"), FileMode.CreateNew));
-        var context = new GeometryExporter(doc, output, original, data, selection, canceled, warnings);
+        var context = new GeometryExporter(doc, output, original, data, selection, canceled, warnings, curveDetail);
         try {
             // The entire temporary view, visibility edits and transaction are rolled back.
             using var group = new TransactionGroup(doc, "XIVgate temporary export");
@@ -169,7 +172,7 @@ internal sealed class GeometryExporter : IPhotoRenderContext
             catch (Exception ex) { externalReferences = true; warnings.Add("Невозможно подтвердить отсутствие внешних зависимостей для кэша: " + ex.Message); }
             var result = new { schema = 1, units = "metres", up = "Z", source, layout = "triangle_soup_float32_position_normal_uv_then_int64_material_per_triangle",
                 cache_dependencies = context.cacheDependencies.Values.ToArray(), cache_reusable = !context.unresolvedTextures && !externalReferences,
-                summary = new { occurrences = context.occurrences.Count, prototypes = context.prototypes.Count, triangles = context.triangles, materials = context.materials.Count, bytes, visited_elements = context.visitedElements, material_callbacks = context.materialCallbacks, isolated_elements = context.isolation.Count },
+                summary = new { family_detail = detail, curve_detail = curveDetail, occurrences = context.occurrences.Count, prototypes = context.prototypes.Count, triangles = context.triangles, materials = context.materials.Count, bytes, visited_elements = context.visitedElements, material_callbacks = context.materialCallbacks, isolated_elements = context.isolation.Count },
                 prototypes = context.prototypes, occurrences = context.occurrences, materials = context.materials, warnings };
             // Directory is a new revision and never reused; only the manifest is promoted last.
             string pending = manifest + ".pending";
@@ -185,7 +188,7 @@ internal sealed class GeometryExporter : IPhotoRenderContext
     public bool Start() => true;
     public void Finish() { }
     public bool IsCanceled() => canceled();
-    public RenderNodeAction OnViewBegin(ViewNode node) { node.LevelOfDetail = 5; return RenderNodeAction.Proceed; }
+    public RenderNodeAction OnViewBegin(ViewNode node) { node.LevelOfDetail = curveDetail; return RenderNodeAction.Proceed; }
     public void OnViewEnd(ElementId id) { }
     public RenderNodeAction OnElementBegin(ElementId id)
     {

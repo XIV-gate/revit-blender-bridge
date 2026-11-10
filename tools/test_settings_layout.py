@@ -38,17 +38,18 @@ ui.runtime.STATE.worker = None
 def locations(kind, name):
     return [section for section, category, value in layout.calls if category == kind and value == name]
 assert locations('prop', 'revit_exe') == ['Подключение Revit']
-assert locations('operator', 'xivgate_rbb.choose_revit') == ['Подключение Revit']
+assert locations('operator', 'xivgate_rbb.choose_revit') == ['main']
 assert locations('operator', 'xivgate_rbb.setup_revit') == ['Подключение Revit']
 assert locations('operator', 'xivgate_rbb.cancel') == ['Подключение Revit']
 assert not locations('prop', 'addin_folder')
-for field in ('import_mode', 'use_revit_instances', 'instance_tolerance_mm', 'center_model', 'detail_level'):
+for field in ('import_mode', 'use_revit_instances', 'instance_tolerance_mm', 'center_model', 'detail_level', 'curve_detail'):
     assert locations('prop', field) == ['Геометрия'], (field, layout.calls)
 for field in ('import_materials', 'import_textures', 'pack_images'):
     assert locations('prop', field) == ['Материалы и текстуры']
 for field in ('cache_directory', 'reuse_export_cache', 'overwrite_source', 'reuse_prepared_model', 'keep_temporary_data'):
     assert locations('prop', field) == ['Подготовка RVT и рабочие данные']
 assert locations('prop', 'source_rvt') == ['main']
+assert locations('operator', 'xivgate_rbb.auto_revit') == ['main']
 assert locations('operator', 'xivgate_rbb.import_selected') == ['main', 'main']
 props.show_program_settings = False
 layout = Layout()

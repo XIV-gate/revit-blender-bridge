@@ -86,14 +86,16 @@ def _fingerprint(path):
     return {'sha256': digest.hexdigest(), 'size': size}
 
 
-def export_signature(source_path, selection_ids, detail_level, worker_key, worker_version):
+def export_signature(source_path, selection_ids, detail_level, worker_key, worker_version, curve_detail=5):
     """Content identity plus the complete selection and geometry-affecting options."""
     try:
         if detail_level not in ('coarse', 'medium', 'fine') or not isinstance(worker_key, str) or not worker_key:
             raise CacheError('Не указаны точные параметры экспорта')
         if not isinstance(worker_version, str) or not worker_version.strip():
             raise CacheError('Не указана версия Revit worker')
-        identity = {'schema': 1, 'source_path': os.path.normcase(os.path.abspath(source_path)),
+        if type(curve_detail) is not int or not 1 <= curve_detail <= 15:
+            raise CacheError('Детализация кривых должна быть целым числом от 1 до 15')
+        identity = {'curve_detail': curve_detail, 'schema': 1, 'source_path': os.path.normcase(os.path.abspath(source_path)),
                     'source_sha256': _fingerprint(Path(source_path))['sha256'],
                     'selection_ids': sorted({str(value) for value in selection_ids}),
                     'detail_level': detail_level, 'worker_key': worker_key, 'worker_version': worker_version}

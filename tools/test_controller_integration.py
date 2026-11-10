@@ -25,6 +25,7 @@ class TestWorker:
     pid = None
     started_executables = []
     export_requests = []
+    curve_levels = []
     composite_delta = False
     empty_delta = False
     crash_after_export = False
@@ -56,6 +57,7 @@ class TestWorker:
                 response['catalog_path'] = str(catalog)
             elif request['action'] == 'export':
                 self.export_requests.append(tuple(request['selection']['include_ids']))
+                self.curve_levels.append(request['options'].get('curve_detail', 5))
                 fixture_ids = set(request['selection']['include_ids'])
                 if self.empty_delta:
                     fixture_ids.discard('13')
@@ -193,6 +195,12 @@ with patch.object(runtime, 'WorkerProcess', TestWorker), patch.object(runtime, '
     assert TestWorker.started_executables[-1] == str(other_exe)
     assert len(TestWorker.started_executables) == 2
     assert props.result_placements == 1
+    for curve in (15, 5):
+        before=len(TestWorker.export_requests)
+        props.curve_detail=curve
+        runtime.begin_export(scene);wait_ready()
+        assert len(TestWorker.export_requests)==before+1, 'Curve change must request new native tessellation, not reuse an old raw snapshot'
+        assert TestWorker.curve_levels[-1]==curve
 assert source.read_bytes() == b'explicit test double, not a Revit document'
 xivgate_revit_bridge.unregister()
 report = dict(status='passed', blender=bpy.app.version_string, real_converter_subprocess=True,

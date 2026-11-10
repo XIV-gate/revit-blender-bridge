@@ -33,6 +33,12 @@ public static class Protocol
             String(r, "token") == token && Guid.TryParse(String(r, "session_id"), out _) &&
             Guid.TryParse(String(r, "request_id"), out _) && (session == null || session == String(r, "session_id"));
     }
+    public static int CurveDetail(JsonElement options) {
+        if(options.ValueKind!=JsonValueKind.Object || !options.TryGetProperty("curve_detail",out var value)) return 5;
+        if(value.ValueKind!=JsonValueKind.Number || !value.TryGetInt32(out int level) || level<1 || level>15)
+            throw new ArgumentException("Детализация кривых должна быть целым числом от 1 до 15.");
+        return level;
+    }
     public static HashSet<long> Selection(JsonElement request)
     {
         if (request.ValueKind != JsonValueKind.Object || !request.TryGetProperty("selection", out var selection) || selection.ValueKind != JsonValueKind.Object || !selection.TryGetProperty("include_ids", out var ids) || ids.ValueKind != JsonValueKind.Array)

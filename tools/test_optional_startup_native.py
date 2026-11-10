@@ -47,6 +47,8 @@ def main():
     parser.add_argument('--reference-probe', action='store_true', help='Use only with the test-only native reference-probe DLL')
     parser.add_argument('--category', action='append', default=[])
     parser.add_argument('--limit', type=int, default=32)
+    parser.add_argument('--curve-detail',type=int,default=5,choices=range(1,16))
+    parser.add_argument('--detail-level',choices=('coarse','medium','fine'),default='fine')
     args = parser.parse_args()
     root = Path(args.workspace).resolve(strict=True)
     assert root.drive.lower() == 'd:'
@@ -126,7 +128,7 @@ def main():
         report['selection_count'] = len(ids)
         report['selected_ids'] = ids
         del rows, catalog
-        session.request('export', selection_ids=ids, options={'detail_level': 'fine', 'materials': True, 'textures': True})
+        session.request('export', selection_ids=ids, options={'detail_level': args.detail_level, 'curve_detail': args.curve_detail, 'materials': True, 'textures': True})
         exported = wait_response()
         if args.expect_dynamo_failure:
             assert sum('dynamo_player_startup_failed' in warning for warning in exported.get('warnings', [])) == 1

@@ -57,6 +57,13 @@ class ExportCacheTests(unittest.TestCase):
         self.assertNotEqual(old, self.sign())
         self.assertRegex(first, r'^[0-9a-f]{64}$')
 
+    def test_curve_detail_is_part_of_signature(self):
+        first=export_cache.export_signature(self.source,('9',),'medium','2027','0.5.7',curve_detail=5)
+        self.assertNotEqual(first,export_cache.export_signature(self.source,('9',),'medium','2027','0.5.7',curve_detail=12))
+        for bad in (0,16,True,2.5):
+            with self.assertRaises(export_cache.CacheError):
+                export_cache.export_signature(self.source,('9',),'medium','2027','0.5.7',curve_detail=bad)
+
     def test_signature_binds_source_location_even_when_rvt_bytes_match(self):
         other_directory = self.root / 'other-source'
         other_directory.mkdir()

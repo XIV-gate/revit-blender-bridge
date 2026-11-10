@@ -277,7 +277,7 @@ def export_logs(scene, target):
     if STATE.scene == scene and STATE.file_root:
         # A cache hit can reference a different, verified job's output revision.
         directories.append(STATE.file_root.parent.parent)
-    options = {name: getattr(props, name) for name in ('detail_level', 'preserve_instances', 'import_mode', 'use_revit_instances', 'instance_tolerance_mm',
+    options = {name: getattr(props, name) for name in ('detail_level', 'curve_detail', 'preserve_instances', 'import_mode', 'use_revit_instances', 'instance_tolerance_mm',
         'import_materials', 'import_textures', 'pack_images', 'center_model', 'reuse_export_cache', 'filter_remote_geometry')}
     try:
         revit = inspect_revit(bpy.path.abspath(props.revit_exe))
@@ -484,11 +484,11 @@ def begin_export(scene, *, force_refresh=False):
     STATE.file_root = None
     source_hash = source_sha256(source)
     STATE.pending_snapshot_context = json.dumps(dict(format='native_family_v1', preparation=preparation_key(props), revision=props.catalog_revision, source=str(source), sha256=source_hash,
-        exe=os.path.normcase(str(Path(bpy.path.abspath(props.revit_exe)).resolve())), detail=props.detail_level), sort_keys=True)
+        exe=os.path.normcase(str(Path(bpy.path.abspath(props.revit_exe)).resolve())), detail=props.detail_level, curve_detail=props.curve_detail), sort_keys=True)
     import_mode=settings_mode(props)
     STATE.pending_context = json.dumps(dict(format=9, preparation=preparation_key(props), revision=props.catalog_revision, source=str(source), sha256=source_hash,
         exe=os.path.normcase(str(Path(bpy.path.abspath(props.revit_exe)).resolve())),
-        detail=props.detail_level, instances=import_mode!='OBJECTS', import_mode=import_mode, materials=props.import_materials,
+        detail=props.detail_level, curve_detail=props.curve_detail, instances=import_mode!='OBJECTS', import_mode=import_mode, materials=props.import_materials,
         textures=props.import_textures, pack=props.pack_images, centered=props.center_model,
         native_instances=props.use_revit_instances, instance_tolerance_mm=props.instance_tolerance_mm,
         filter_remote_geometry=props.filter_remote_geometry), sort_keys=True)
@@ -549,7 +549,7 @@ def begin_export(scene, *, force_refresh=False):
     key = '|'.join((host['key'], host.get('version', ''), os.path.normcase(str(Path(bpy.path.abspath(props.revit_exe)).resolve()))))
     import hashlib
     STATE.cache_index = cache_root(props) / 'last_export.json'
-    STATE.cache_signature = export_signature(source, ids, props.detail_level, key, '.'.join(map(str, bl_info['version'])))
+    STATE.cache_signature = export_signature(source, ids, props.detail_level, key, '.'.join(map(str, bl_info['version'])), curve_detail=props.curve_detail)
     STATE.cache_signature = hashlib.sha256((STATE.cache_signature + preparation_key(props) + props.catalog_revision).encode()).hexdigest()
     if not force_refresh and STATE.delta_ids is None and props.reuse_export_cache:
         manifest = lookup_export(STATE.cache_index, STATE.cache_signature)
@@ -568,7 +568,7 @@ def begin_export(scene, *, force_refresh=False):
         return
     STATE.scene = scene
     export_ids = STATE.delta_ids if STATE.delta_ids is not None else ids
-    request = STATE.session.request('export', selection_ids=export_ids, options={'detail_level': props.detail_level})
+    request = STATE.session.request('export', selection_ids=export_ids, options={'detail_level': props.detail_level, 'curve_detail': props.curve_detail})
     STATE.request_id = request['request_id']
     STATE.action = 'export'
     STATE.started = time.monotonic()

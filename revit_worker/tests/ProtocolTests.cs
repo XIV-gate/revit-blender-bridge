@@ -90,6 +90,12 @@ static class ProtocolTests
     [MethodImpl(MethodImplOptions.NoInlining)]
     static int Run(string[] args)
     {
+        using(var curve = JsonDocument.Parse("{\"curve_detail\":15}")) Check(Protocol.CurveDetail(curve.RootElement)==15,"curve detail transmitted");
+        using(var curve = JsonDocument.Parse("{}")) Check(Protocol.CurveDetail(curve.RootElement)==5,"legacy curve detail defaults to five");
+        foreach(string invalid in new[]{"0","16","true","2.5"}) {
+            using var curve=JsonDocument.Parse("{\"curve_detail\":"+invalid+"}");
+            Throws(()=>Protocol.CurveDetail(curve.RootElement),"invalid curve detail rejected");
+        }
         string root = Path.GetFullPath(args[0]); assertions += OfflineReferenceTests.Run(root); assertions += PreparedModelCacheTests.Run(root); assertions += SourceReplacementTests.Run(root);
         string sharingFile = Path.Combine(root, "atomic-sharing-" + Guid.NewGuid().ToString("N") + ".json");
         try {

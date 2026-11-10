@@ -461,9 +461,10 @@ internal sealed class WorkerImplementation : IExternalApplication
         Directory.CreateDirectory(output);
         foreach (long id in selected) if (document.GetElement(new ElementId(id)) == null) throw new ArgumentException("Выбранный элемент отсутствует в модели: " + id);
         string detail = request.TryGetProperty("options", out var options) ? Protocol.String(options, "detail_level", "medium") : "medium";
+        int curveDetail = Protocol.CurveDetail(options);
         Status("exporting", "Экспорт выбранных элементов", 0.05);
         exportingOwnedCopy = true;
-        try { GeometryExporter.Run(document, output, selected, Source(), original, detail, IsCanceled, warnings); }
+        try { GeometryExporter.Run(document, output, selected, Source(), original, detail, IsCanceled, warnings, curveDetail); }
         finally { exportingOwnedCopy = false; }
         if (failureAbortReason.Length > 0) throw new InvalidOperationException(failureAbortReason);
         CheckCancel();

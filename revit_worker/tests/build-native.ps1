@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$OutputDir,
     [switch]$LoaderCompatible,
-    [ValidateSet('Views','References','Selective')][string]$Case = 'Views',
+    [ValidateSet('Views','References','Selective','Curves')][string]$Case = 'Views',
     [string]$RevitDir = 'C:\Program Files\Autodesk\Revit 2027',
     [string]$DotnetRoot = 'C:\Program Files\dotnet'
 )
@@ -20,7 +20,7 @@ foreach ($filename in @('RevitAPI.dll', 'RevitAPIUI.dll')) {
     if ([Reflection.AssemblyName]::GetAssemblyName($reference).Version.Major -ne 27) { throw 'Native fixture requires real Revit 2027 SDK assemblies.' }
     $arguments += '/reference:' + $reference
 }
-$fixture = switch ($Case) { 'References' { 'NativeServerReferenceProbe.cs' }; 'Selective' { 'NativeSelectiveRegression.cs' }; default { 'NativeViewRegression.cs' } }
+$fixture = switch ($Case) { 'References' { 'NativeServerReferenceProbe.cs' }; 'Selective' { 'NativeSelectiveRegression.cs' }; 'Curves' { 'NativeCurveDetailRegression.cs' }; default { 'NativeViewRegression.cs' } }
 $arguments += Join-Path $PSScriptRoot $fixture
 if ($Case -eq 'Selective') {
     # Pin the full-traversal baseline; never silently compare against a changed worktree.

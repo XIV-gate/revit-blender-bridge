@@ -79,6 +79,28 @@ def revit_installations(self, context):
     return _REVIT_ITEMS or [('NONE', 'Установки не найдены', 'Укажите Revit.exe вручную')]
 
 
+class RBB_OT_auto_revit(bpy.types.Operator):
+    bl_idname = 'xivgate_rbb.auto_revit'
+    bl_label = 'Автовыбор Revit'
+    bl_description = 'Прочитать версию RVT без запуска Revit и выбрать ту же установленную версию; если её нет — ближайшую более новую. Выбор не открывает модель и не подключает надстройку'
+    def execute(self, context):
+        from .core.rvt_metadata import file_info, choose_revit
+        from .core.revit_versions import discover
+        props=context.scene.xivgate_revit_bridge
+        if props.busy or runtime.MAINTENANCE:return {'CANCELLED'}
+        info=file_info(bpy.path.abspath(props.source_rvt),refresh=True)
+        if not info['year']:
+            self.report({'WARNING'},'Не удалось определить версию RVT. Выберите Revit вручную.')
+            return {'CANCELLED'}
+        choice=choose_revit(info['year'],discover())
+        if not choice:
+            self.report({'ERROR'},f"Не найден установленный Revit {info['year']} или новее.")
+            return {'CANCELLED'}
+        props.revit_exe=choice['path']
+        self.report({'INFO'},f"Для файла Revit {info['year']} выбран Revit {choice['year']}.")
+        return {'FINISHED'}
+
+
 class RBB_OT_choose_revit(bpy.types.Operator):
     bl_idname = 'xivgate_rbb.choose_revit'
     bl_label = 'Выбрать установленный Revit'
@@ -325,7 +347,9 @@ class RBB_Settings(bpy.types.PropertyGroup):
     pack_images: BoolProperty(name='Упаковать текстуры в .blend', default=True, description='Встроить найденные изображения в сохранённый .blend для передачи модели')
     center_model: BoolProperty(name='Разместить около начала координат', default=True, description='Общее смещение XY для превью и модели; высоты сохраняются', update=centering_changed)
     load_links: BoolProperty(default=False)
-    detail_level: EnumProperty(name='Детализация', items=[('coarse', 'Низкая', ''), ('medium', 'Средняя', ''), ('fine', 'Высокая', '')], default='medium')
+    detail_level: EnumProperty(name='Детализация семейств Revit', description='Выбрать представление семейства, заданное автором RVT: низкое, среднее или высокое. Это не упрощение произвольной сетки', items=[('coarse', 'Низкая', ''), ('medium', 'Средняя', ''), ('fine', 'Высокая', '')], default='medium')
+    curve_detail: IntProperty(name='Детализация кривых', default=5, min=1, max=15,
+        description='Разбиение криволинейных поверхностей на треугольники: 1 — грубее, 15 — плавнее и тяжелее. 5 сохраняет прежнее качество; 8 — обычный уровень Revit. Плоские грани не должны усложняться')
     show_import_settings: BoolProperty(name='Настройки импорта', default=True, description='Геометрия, инстансы, материалы, текстуры и координаты импортируемой модели')
     show_program_settings: BoolProperty(name='Настройки программы', default=False, description='Выбор и подключение версии Revit, расположение и хранение рабочих данных')
     show_advanced: BoolProperty(name='Настройки', default=False, description='Подключение Revit, параметры импорта и рабочие данные — каждый в своём разделе')
@@ -982,7 +1006,7 @@ def draw_import_settings(layout, props):
     if settings_mode(props) == 'INSTANCES':
         options.prop(props, 'use_revit_instances')
         options.prop(props, 'instance_tolerance_mm')
-    for field in ('detail_level', 'center_model', 'filter_remote_geometry'):
+    for field in ('detail_level', 'curve_detail', 'center_model', 'filter_remote_geometry'):
         options.prop(props, field)
     materials = layout.box()
     materials.label(text='Материалы и текстуры', icon='MATERIAL')
@@ -997,7 +1021,7 @@ def draw_program_settings(layout, props, context):
     connection.label(text='Подключение Revit', icon='PLUGIN')
     state = runtime.connection_info(props)
     title = f"Revit {state['year']} · {state['version']}" if 'year' in state else 'Выбрать установленный Revit'
-    connection.operator('xivgate_rbb.choose_revit', text=title, icon='DOWNARROW_HLT')
+    connection.label(text=title, icon='PLUGIN')
     _wrapped(connection, state['message'], context,
              icon='CHECKMARK' if state['connected'] else 'INFO')
     action = connection.row()
@@ -1043,6 +1067,20 @@ class RBB_PT_panel(bpy.types.Panel):
         files = layout.column()
         files.enabled = not props.busy and not runtime.MAINTENANCE
         files.prop(props, 'source_rvt')
+        from .core.rvt_metadata import file_info
+        info=file_info(bpy.path.abspath(props.source_rvt)) if props.source_rvt else None
+        if info:
+            files.label(text=(f"Файл Revit {info['year']}" if info['year'] else 'Версия RVT не определена') + f" · {info['bytes']/1024**2:.1f} МБ", icon='INFO')
+        from .core.revit_versions import inspect_revit
+        try:
+            selected=inspect_revit(bpy.path.abspath(props.revit_exe))
+        except (OSError,ValueError,KeyError):
+            selected=None
+        version=files.row(align=True)
+        version.operator('xivgate_rbb.choose_revit',text=f"Revit {selected['year']}" if selected else 'Выбрать Revit',icon='DOWNARROW_HLT')
+        version.operator('xivgate_rbb.auto_revit',text='Авто',icon='VIEWZOOM')
+        if info and info['year'] and selected and selected['year']<info['year']:
+            _wrapped(files,f"Файл сохранён в Revit {info['year']}; выбранная версия старше и не сможет его открыть.",context,icon='ERROR')
         if props.overwrite_source:
             _wrapped(files, 'Оригинал будет заменён подготовленной копией, в том числе найденной в дате.', context, icon='ERROR')
         if props.prepared_copy_date and props.reuse_prepared_model:
@@ -1171,7 +1209,7 @@ def _initialize_tree():
 
 
 CLASSES = (RBB_Element, RBB_Group, RBB_TreeRow, RBB_Warning, RBB_Settings, RBB_UL_catalog_tree, RBB_OT_element_info, RBB_UL_groups, RBB_UL_elements, RBB_UL_warnings, RBB_OT_warnings,
-           RBB_OT_choose_revit,
+           RBB_OT_auto_revit, RBB_OT_choose_revit,
            RBB_OT_toggle_group, RBB_OT_inspect_group, RBB_OT_clear_scope, RBB_OT_copy_report_details, RBB_OT_export_logs, RBB_OT_readable_names,
            RBB_OT_setup, RBB_OT_scan, RBB_OT_import, RBB_OT_select, RBB_OT_cancel,
            RBB_OT_show_worker, RBB_OT_cache, RBB_OT_toggle_preview, RBB_OT_check_update, RBB_OT_install_update, RBB_OT_select_source_faces, RBB_PT_panel)
