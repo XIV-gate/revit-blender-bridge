@@ -551,3 +551,7 @@ assembly version changed in C#.
 - Candidate ZIP installation, stable 0.5.0 → 0.5.4 → 0.5.0 switching, controller
   subprocess integration, Scene lifecycle/cancellation and UI contract are tested
   in isolated Blender profiles. Live scene and Preferences are not saved.
+- Published v0.5.4 is prerelease=true; v0.5.0 remains Latest stable. Anonymous
+  public release discovery and ZIP download/manifest verification passed in both
+  Blender hosts. Downloaded 0.5.4 SHA-256:
+  `3a06e7025f36ceaf0dd4209ba79687eb47bb76f56293236c6afae1f9162ee773`.
