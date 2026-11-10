@@ -26,6 +26,9 @@ def main():
     parser.add_argument('--version', required=True)
     parser.add_argument('--registration', required=True)
     parser.add_argument('--revit', required=True)
+    parser.add_argument('--timeout', type=float, default=240)
+    parser.add_argument('--expect-dynamo-failure', action='store_true')
+    parser.add_argument('--reference-probe', action='store_true', help='Use only with the test-only native reference-probe DLL')
     args = parser.parse_args()
     root = Path(args.workspace).resolve(strict=True)
     assert root.drive.lower() == 'd:'
@@ -46,10 +49,14 @@ def main():
         with target.open('xb') as stream:
             stream.write(worker_bytes)
     session = JobSession.create(root)
+    if args.reference_probe:
+        (session.directory / 'reference_probe_enabled').write_text('test-only', encoding='utf-8')
     process = WorkerProcess()
     report = {'source_sha256': before, 'directory': str(session.directory), 'worker_sha256': digest}
 
-    def wait_response(limit=240):
+    def wait_response(limit=None):
+        if limit is None:
+            limit = args.timeout
         deadline = time.monotonic() + limit
         previous = None
         while time.monotonic() < deadline:
@@ -57,9 +64,13 @@ def main():
             if status and (status.get('state'), status.get('message')) != previous:
                 previous = status.get('state'), status.get('message')
                 print(json.dumps({'state': previous[0], 'message': previous[1]}, ensure_ascii=False), flush=True)
-                assert previous[0] != 'requires_action', 'Unexpected modal dialog; inspect worker.log'
+                if previous[0] == 'requires_action':
+                    report['blocked_dialog'] = status
+                    raise AssertionError('Unexpected modal dialog; inspect worker.log')
             response = session.read_response(session.request_id)
             if response:
+                if args.reference_probe:
+                    report['reference_probe'] = response
                 assert response['success'], response.get('error')
                 return response
             assert process.poll() is None, 'Native process exited before response'
@@ -77,6 +88,16 @@ def main():
         report['pid'] = process.pid
         scan = wait_response()
         report['scan_seconds'] = time.monotonic() - started
+        if args.reference_probe:
+            assert scan['rewritten'] > 0 and scan['verified_streams'] > 0, scan
+            assert scan['native_seconds'] < 15, scan
+            assert source_sha256(source) == before
+            report['success'] = True
+            deadline = time.monotonic() + 15
+            while process.poll() is None and time.monotonic() < deadline:
+                time.sleep(.25)
+            print('NATIVE_REFERENCE_PROBE_PASS', json.dumps(scan, ensure_ascii=False), flush=True)
+            return
         catalog = read_json(scan['catalog_path'])
         rows = catalog['elements']
         ids = [str(row['id']) for row in rows if row.get('bbox_min') is not None
@@ -86,23 +107,25 @@ def main():
         report['selection_count'] = len(ids)
         session.request('export', selection_ids=ids, options={'detail': 'Fine', 'materials': True, 'textures': True})
         exported = wait_response()
-        assert sum('dynamo_player_startup_failed' in warning for warning in exported.get('warnings', [])) == 1
+        if args.expect_dynamo_failure:
+            assert sum('dynamo_player_startup_failed' in warning for warning in exported.get('warnings', [])) == 1
         report['manifest'] = exported['manifest_path']
         report['warning_records'] = read_json(session.directory / 'warnings.json')
         log = (session.directory / 'worker.log').read_text(encoding='utf-8-sig')
-        assert 'optional_addin_failure_closed' in log, 'Expected real Dynamo failure was not exercised'
-        assert log.count('optional_addin_failure_closed') == 1
-        assert sum(r['id'] == 'dynamo_player_startup_failed' for r in report['warning_records']['records']) == 1
+        if args.expect_dynamo_failure:
+            assert log.count('optional_addin_failure_closed') == 1, 'Expected real Dynamo failure was not exercised once'
+            assert sum(r['id'] == 'dynamo_player_startup_failed' for r in report['warning_records']['records']) == 1
         assert source_sha256(source) == before, 'Original RVT changed'
         report['success'] = True
     finally:
         if process.pid and process.poll() is None:
             try:
-                session.request('shutdown')
-                wait_response(20)
-                deadline = time.monotonic() + 15
-                while process.poll() is None and time.monotonic() < deadline:
-                    time.sleep(.25)
+                if not args.reference_probe:
+                    session.request('shutdown')
+                    wait_response(20)
+                    deadline = time.monotonic() + 15
+                    while process.poll() is None and time.monotonic() < deadline:
+                        time.sleep(.25)
             finally:
                 process.terminate()
         report['source_unchanged'] = source_sha256(source) == before

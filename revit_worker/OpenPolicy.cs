@@ -4,6 +4,8 @@ namespace XIVgate.RevitBridge;
 
 public static class OpenPolicy
 {
+    public static bool RebaseTransmittedCopy(bool workshared, bool transmitted, bool serverOrigin = false) => workshared && transmitted && !serverOrigin;
+
     // Reading TransmissionData of a server-origin local snapshot can contact
     // its saved central server before OpenOptions has a chance to detach it.
     public static bool NormalizeServerSnapshot(bool workshared, string centralPath) =>

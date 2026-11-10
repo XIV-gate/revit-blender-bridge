@@ -11,7 +11,7 @@ static class ProtocolTests
 {
     static int assertions;
     static void Check(bool condition, string label) { assertions++; if (!condition) throw new Exception(label); }
-    static void Throws(Action action, string label) { bool failed = false; try { action(); } catch (ArgumentException) { failed = true; } catch (IOException) { failed = true; } Check(failed, label); }
+    static void Throws(Action action, string label) { bool failed = false; try { action(); } catch (ArgumentException) { failed = true; } catch (IOException) { failed = true; } catch (InvalidDataException) { failed = true; } Check(failed, label); }
     static byte[] Triangle(double[] values, long material)
     {
         using var stream = new MemoryStream();
@@ -90,7 +90,7 @@ static class ProtocolTests
     [MethodImpl(MethodImplOptions.NoInlining)]
     static int Run(string[] args)
     {
-        string root = Path.GetFullPath(args[0]);
+        string root = Path.GetFullPath(args[0]); assertions += OfflineReferenceTests.Run(root);
         string file = Path.Combine(root, "protocol-" + Guid.NewGuid().ToString("N") + ".json");
         try {
 #if NETFRAMEWORK
@@ -146,6 +146,25 @@ static class ProtocolTests
             using (var atomic = Protocol.Read(file)) Check(Protocol.String(atomic.RootElement, "name") == "Дверь", "atomic replacement complete");
             Check(Directory.GetFiles(root, Path.GetFileName(file) + ".*.pending").Length == 0, "pending files cleaned");
             string dialog = "Dialog_Revit_DocWarnDialog";
+            Check(OpenPolicy.RebaseTransmittedCopy(true, true), "transmitted workshared copy uses local rebase open mode");
+            Check(!OpenPolicy.RebaseTransmittedCopy(true, false), "ordinary workshared model retains detach mode");
+            Check(!OpenPolicy.RebaseTransmittedCopy(false, true), "nonworkshared models do not use central resave mode");
+            Check(!OpenPolicy.RebaseTransmittedCopy(true, true, true), "RSN central retains detach-preserve mode");
+            foreach (var entry in new[] {
+                ("TaskDialog_Views_Related_To_Analytical_Changed", 8),
+                ("TaskDialog_Missing_Third_Party_Updater", 1001),
+                ("TaskDialog_Missing_Third_Party_Updaters", 1001) }) {
+                Check(WarningPolicy.OpeningCopyDialogResult(true, true, true, true, false, 0, entry.Item1) == entry.Item2, "known copy-opening dialog chooses close or nonpersistent continue");
+                Check(WarningPolicy.OpeningCopyDialogResult(true, true, true, true, false, 3, entry.Item1) == entry.Item2, "normal second copy open remains supported");
+                Check(WarningPolicy.OpeningCopyDialogResult(true, true, true, true, false, 4, entry.Item1) == null, "repeated loop stops for review");
+                Check(WarningPolicy.OpeningCopyDialogResult(false, true, true, true, false, 0, entry.Item1) == null, "normal Revit is untouched");
+                Check(WarningPolicy.OpeningCopyDialogResult(true, false, true, true, false, 0, entry.Item1) == null, "unauthenticated job is untouched");
+                Check(WarningPolicy.OpeningCopyDialogResult(true, true, false, true, false, 0, entry.Item1) == null, "idle callback cannot acknowledge");
+                Check(WarningPolicy.OpeningCopyDialogResult(true, true, true, false, false, 0, entry.Item1) == null, "export and foreign documents are untouched");
+                Check(WarningPolicy.OpeningCopyDialogResult(true, true, true, true, true, 0, entry.Item1) == null, "captured model error blocks acknowledgement");
+            }
+            foreach (string unknown in new[] { "TaskDialog_Schema_Conflict_Upgrade", "TaskDialog_Unrecoverable_Error", "TaskDialog_Trust", "TaskDialog_License", "", "taskdialog_missing_third_party_updaters" })
+                Check(WarningPolicy.OpeningCopyDialogResult(true, true, true, true, false, 0, unknown) == null, "unrecognized dialog stays visible");
             string optionalDialog = "TaskDialog_External_Tools_External_Tool_Failure";
             string optionalMessage = "Cannot start external application \"Application Dynamo Player For Revit\". Autodesk.";
             Check(WarningPolicy.DismissOptionalStartupFailure(true, true, true, false, optionalDialog, optionalMessage), "Dynamo startup failure may be closed in authenticated service startup");

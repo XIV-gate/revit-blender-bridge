@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$OutputDir,
     [switch]$LoaderCompatible,
+    [ValidateSet('Views','References')][string]$Case = 'Views',
     [string]$RevitDir = 'C:\Program Files\Autodesk\Revit 2027',
     [string]$DotnetRoot = 'C:\Program Files\dotnet'
 )
@@ -19,8 +20,12 @@ foreach ($filename in @('RevitAPI.dll', 'RevitAPIUI.dll')) {
     if ([Reflection.AssemblyName]::GetAssemblyName($reference).Version.Major -ne 27) { throw 'Native fixture requires real Revit 2027 SDK assemblies.' }
     $arguments += '/reference:' + $reference
 }
-$arguments += Join-Path $PSScriptRoot 'NativeViewRegression.cs'
-foreach ($filename in @('GeometryExporter.cs','GeometryPrecision.cs','NativeInstancePolicy.cs','Compat.cs','Protocol.cs','TextureLookup.cs','TextureProperty.cs','NetFrameworkSupport.cs')) { $arguments += Join-Path $worker $filename }
+$fixture = if ($Case -eq 'References') { 'NativeServerReferenceProbe.cs' } else { 'NativeViewRegression.cs' }
+$arguments += Join-Path $PSScriptRoot $fixture
+$shared = @('Compat.cs','Protocol.cs','NetFrameworkSupport.cs')
+if ($Case -eq 'References') { $shared += @('WarningPolicy.cs','OfflineReferencePreparer.cs','OfflineReferenceValidation.cs') }
+else { $shared += @('GeometryExporter.cs','GeometryPrecision.cs','NativeInstancePolicy.cs','TextureLookup.cs','TextureProperty.cs') }
+foreach ($filename in $shared) { $arguments += Join-Path $worker $filename }
 $response = Join-Path $destination '.native_compile.rsp'
 $arguments | ForEach-Object { '"' + $_ + '"' } | Set-Content -LiteralPath $response -Encoding utf8
 try { & (Join-Path $DotnetRoot 'dotnet.exe') $configuration.Compiler ('@' + $response) }

@@ -22,6 +22,7 @@ internal sealed class WorkerImplementation : IExternalApplication
     readonly List<string> startupWarnings = new();
     readonly List<object> startupWarningRecords = new();
     bool optionalStartupFailureHandled;
+    readonly Dictionary<string, int> copyDialogAcknowledgements = new(StringComparer.Ordinal);
     Document? document;
     string original = "", originalHash = "", sourceVersion = "";
     JsonElement active;
@@ -183,6 +184,7 @@ internal sealed class WorkerImplementation : IExternalApplication
     void Scan(UIApplication ui, JsonElement request)
     {
         scanReady = false; scanWarnings.Clear();
+        copyDialogAcknowledgements.Clear();
         warnings.AddRange(startupWarnings);
         warningRecords.Clear();
         warningRecords.AddRange(startupWarningRecords);
@@ -199,19 +201,37 @@ internal sealed class WorkerImplementation : IExternalApplication
         using (var output = new FileStream(copy, FileMode.CreateNew, FileAccess.Write, FileShare.None)) input.CopyTo(output);
         original = Path.GetFullPath(source);
         using (var hashInput = File.OpenRead(copy)) originalHash = Compat.Hex(Compat.Sha256(hashInput)).ToLowerInvariant();
+        bool links = request.TryGetProperty("options", out var opts) && opts.TryGetProperty("load_links", out var load) && load.ValueKind == JsonValueKind.True;
+        if (!links) {
+            Status("references", "Проверка серверных связей в рабочей копии RVT", 0.03);
+            var preparedReferences = OfflineReferencePreparer.Prepare(root, Protocol.String(request, "session_id"), original, copy);
+            if (preparedReferences.Ids.Length > 0) {
+                Log("Offline references prepared: " + string.Join(",", preparedReferences.Ids) + "; verified CFB entries=" + preparedReferences.VerifiedEntries);
+                OfflineReferenceValidation.Validate(copy, preparedReferences);
+                Log("Offline references validated by native Revit API.");
+                warnings.Add("Серверные связи отключены только в рабочей копии: " + preparedReferences.Ids.Length + "; ID: " + string.Join(", ", preparedReferences.Ids) + ". Остальные потоки RVT проверены по SHA-256.");
+            }
+        }
         using var info = BasicFileInfo.Extract(copy);
         sourceVersion = info.Format;
         if (info.IsSavedInLaterVersion) throw new IOException("Модель создана в более новой версии Revit.");
         if (!info.IsSavedInCurrentVersion) warnings.Add("Модель " + info.Format + " обновляется только в рабочей копии; исходный RVT не сохраняется.");
         string centralPath = info.IsWorkshared ? info.CentralPath : "";
-        bool links = request.TryGetProperty("options", out var opts) && opts.TryGetProperty("load_links", out var load) && load.ValueKind == JsonValueKind.True;
         bool normalized = false;
         Log("Copy ready; source format " + info.Format + "; workshared=" + info.IsWorkshared + "; server-origin=" + OpenPolicy.NormalizeServerSnapshot(info.IsWorkshared, centralPath));
         if (OpenPolicy.PrepareLocalWorksharedCopy(info.IsWorkshared, links)) {
-            // Public API only. First detach without expanding user worksets, so
-            // server links cannot be loaded before their desired state is set.
-            Status("detaching", "Отсоединение RVT в локальной рабочей копии с закрытыми рабочими наборами", 0.04);
-            using (var detach = new OpenOptions { Audit = false, DetachFromCentralOption = DetachFromCentralOption.DetachAndPreserveWorksets })
+            bool transmitted = TransmissionData.IsDocumentTransmitted(ModelPathUtils.ConvertUserVisiblePathToModelPath(copy));
+            bool rebaseTransmitted = OpenPolicy.RebaseTransmittedCopy(info.IsWorkshared, transmitted, OpenPolicy.NormalizeServerSnapshot(info.IsWorkshared, centralPath));
+            Log("Copied model transmitted=" + transmitted + "; rebase-transmitted=" + rebaseTransmitted);
+            // Native open still performs the version upgrade and may regenerate
+            // families. Close worksets minimizes loading; server metadata was
+            // prepared and validated above before entering the native reader.
+            string preparingMessage = info.IsSavedInCurrentVersion
+                ? "Отсоединение локальной копии RVT с закрытыми рабочими наборами"
+                : "Обновление рабочей копии RVT с " + info.Format + " до " + ui.Application.VersionNumber + "; пересчёт модели средствами Revit";
+            Status("detaching", preparingMessage, 0.04);
+            using (var detach = new OpenOptions { Audit = false, DetachFromCentralOption = rebaseTransmitted
+                ? DetachFromCentralOption.ClearTransmittedSaveAsNewCentral : DetachFromCentralOption.DetachAndPreserveWorksets })
             using (var closed = new WorksetConfiguration(WorksetConfigurationOption.CloseAllWorksets)) {
                 detach.SetOpenWorksetsConfiguration(closed);
                 ownedCopyPath = copy;
@@ -499,6 +519,21 @@ internal sealed class WorkerImplementation : IExternalApplication
                     return;
                 }
                 Log("Optional Dynamo Player failure Close override was rejected; human action required.");
+            }
+            copyDialogAcknowledgements.TryGetValue(e.DialogId, out int priorAcknowledgements);
+            int? openingResult = e is TaskDialogShowingEventArgs
+                ? WarningPolicy.OpeningCopyDialogResult(enabled, AuthenticatedOperation, busy, openingOwnedCopy,
+                    failureAbortReason.Length > 0, priorAcknowledgements, e.DialogId) : null;
+            if (openingResult.HasValue) {
+                bool accepted = e.OverrideResult(openingResult.Value);
+                CaptureWarning("copy_opening_dialog", e.DialogId,
+                    (accepted ? "Предупреждение принято только для рабочей копии. " : "Revit отклонил подтверждение рабочей копии. ") + message,
+                    "Warning", Array.Empty<string>(), accepted ? "opening_copy_dialog_acknowledged" : "requires_action");
+                WriteWarningReport();
+                if (accepted) {
+                    copyDialogAcknowledgements[e.DialogId] = priorAcknowledgements + 1;
+                    return;
+                }
             }
             if (WarningPolicy.AcknowledgeDocumentWarning(enabled, AuthenticatedOperation, busy, openingOwnedCopy, failureAbortReason.Length > 0, e.DialogId)) {
                 bool accepted = e.OverrideResult(1);
