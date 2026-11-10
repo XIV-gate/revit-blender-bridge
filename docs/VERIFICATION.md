@@ -619,3 +619,33 @@ assembly version changed in C#.
   current live Blender scene, live registration and Preferences were not changed.
 - Final ZIP installed/enabled and switched 0.5.0 → 0.5.6 → 0.5.0 in both hosts;
   frozen loader manifest hashes remained unchanged. Scene lifecycle tests passed.
+
+
+## 0.5.7 Early Access — 2026-11-10
+
+- Independent family and curve detail flow through snapshot/import contexts,
+  export signatures, JSON requests, validation and ViewNode.LevelOfDetail.
+  Default 5 retains the previous setting. Invalid/out-of-range values fail early.
+- Native Revit 2027 synthetic cylinder/flat-box regression passed 12 combinations:
+  Coarse/Medium/Fine × curve levels 1/5/8/15. Cylinder triangles: 12/161/511/3394;
+  flat box: 12 throughout; temporary view rollback restored element counts.
+- The actual production worker then opened the saved disposable fixture and
+  exported levels 1 and 15 via authenticated protocol requests. Total triangles
+  including the flat control: 24 and 3406. Fixture source SHA remained unchanged.
+- Source-version inspection read the supplied 1.135 GB original as 2019 and its
+  prepared copy as 2027 without Revit/Autodesk API or file writes. Initial local
+  reads took approximately 16 ms / 5 ms. These timings are example measurements.
+- Isolated Blender 4.2.14 / 5.2.3 read the original metadata on both main and
+  explicit COM MTA threads and exercised automatic installed-version selection.
+  Pure tests cover same-year/newest-patch/nearest-newer selection, no downgrade,
+  ambiguous/unknown metadata and retry after a temporary read lock via Auto refresh.
+- 255 Python tests completed, one privilege skip; 262 .NET Framework 4.8 / 258
+  .NET 8 and 10 protocol assertions passed. Six worker SDK variants built.
+  Native execution remains Revit 2027 only, not a 2024–2026 application claim.
+- Controller tests use a real converter and Revit I/O double: changing curve
+  detail 5 → 15 → 5 requests native exports with those exact values, rather than
+  reusing an incompatible raw snapshot. Earlier delta/cache/preview workflows
+  and UI layout passed in both Blender hosts. Four storage flags remain in fold.
+- Final ZIP installed/enabled and switched 0.5.0 → 0.5.7 → 0.5.0 in both hosts;
+  Scene lifecycle tests passed. Packaged 2027 worker bytes match the actual native
+  production level-15 run; frozen ABI 1 loader hashes are unchanged.
