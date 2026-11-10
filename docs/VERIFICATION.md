@@ -649,3 +649,5 @@ assembly version changed in C#.
 - Final ZIP installed/enabled and switched 0.5.0 → 0.5.7 → 0.5.0 in both hosts;
   Scene lifecycle tests passed. Packaged 2027 worker bytes match the actual native
   production level-15 run; frozen ABI 1 loader hashes are unchanged.
+
+После публикации 0.5.7 анонимная проверка GitHub updater прошла в Blender 4.2.14 и 5.2.3: обе ветки видны, ZIP 0.5.7 скачан и проверен по SHA-256 `63bae922f0030d287722403e2c9da2dfa78bbf8cce4cc592b1fc7f1cab34b7d6`; latest stable остался 0.5.0. Две частные тестовые DLL убраны из установленного runtime после закрытия проверочных процессов Revit; пользовательские Preferences не сохранялись.
