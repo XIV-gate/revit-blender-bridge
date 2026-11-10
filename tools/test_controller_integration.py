@@ -27,11 +27,14 @@ class TestWorker:
     export_requests = []
     composite_delta = False
     empty_delta = False
+    crash_after_export = False
+    exit_code = 0
 
     def start(self, exe, directory, token, extra_env=None):
         self.started_executables.append(str(exe))
         self.directory = Path(directory)
         self.pid = 123456
+        self.exit_code = 0
         self.last = None
         self.poll()
 
@@ -68,8 +71,13 @@ class TestWorker:
                 if self.empty_delta and request['selection']['include_ids'] == ['13']:
                     response.update(success=False, error='Выбранные элементы не дали геометрии. Проверьте состав выбора.')
                 response['manifest_path'] = str(manifest)
+            if request['action'] == 'shutdown':
+                self.pid = None
+            if request['action'] == 'export' and self.crash_after_export:
+                self.pid = None
+                self.exit_code = 17
             atomic_write_json(self.directory / 'response.json', response)
-        return None
+        return None if self.pid else self.exit_code
 
     def terminate(self):
         self.pid = None
@@ -118,8 +126,8 @@ with patch.object(runtime, 'WorkerProcess', TestWorker), patch.object(runtime, '
     snapshot = props.import_manifest_path
     expected_hash = hashlib.sha256(source.read_bytes()).hexdigest()
     assert read_json(Path(snapshot))['source']['sha256'] == expected_hash
-    assert lookup_snapshot(Path(props.cache_directory), snapshot, expected_hash) == Path(snapshot)
-    assert lookup_snapshot(Path(props.cache_directory), snapshot, '0' * 64) is None
+    assert lookup_snapshot(__import__('xivgate_revit_bridge.workflow', fromlist=['cache_root']).cache_root(props), snapshot, expected_hash) == Path(snapshot)
+    assert lookup_snapshot(__import__('xivgate_revit_bridge.workflow', fromlist=['cache_root']).cache_root(props), snapshot, '0' * 64) is None
     assert json.loads(props.import_snapshot_context_json)['sha256'] == expected_hash
     exports, starts = len(TestWorker.export_requests), len(TestWorker.started_executables)
     identity = props.import_id
@@ -131,7 +139,7 @@ with patch.object(runtime, 'WorkerProcess', TestWorker), patch.object(runtime, '
     runtime.begin_export(scene)
     assert runtime.STATE.action == 'convert', 'Old matcher revision must not use the selection-only no-op'
     wait_ready()
-    assert json.loads(props.import_context_json)['format'] == 8
+    assert json.loads(props.import_context_json)['format'] == 9
     assert props.import_id == identity and props.result_placements == 3
     assert props.import_manifest_path == snapshot
     assert len(TestWorker.export_requests) == exports and len(TestWorker.started_executables) == starts

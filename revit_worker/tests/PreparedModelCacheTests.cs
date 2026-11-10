@@ -25,7 +25,7 @@ static class PreparedModelCacheTests
         try {
             Protocol.Atomic(Path.Combine(job, ".agr_revit_bridge_job.json"), new { schema = 1, package_id = "xivgate_revit_bridge", session_id = session });
             File.WriteAllBytes(source, new byte[] { 1, 2, 3, 4 });
-            PreparedModelCache.Entry Publish() => PreparedModelCache.Publish(job, source, hash, "2019", "2024", "24.2.20", new[] { "upgrade warning" }, new object[] { new { stage = "open", description = "detail" } });
+            PreparedModelCache.Entry Publish() => PreparedModelCache.Publish(job, source, hash, "2019", "2024", "24.2.20", new[] { "upgrade warning" }, new object[] { new { stage = "open", description = "detail" } }, sourceIdentity: new string('c', 64));
             Check(PreparedModelCache.TryGet(job, hash, "2024", "24.2.20") == null, "absent cache misses");
             Directory.CreateDirectory(cache); File.WriteAllText(Path.Combine(cache, "foreign.txt"), "user data");
             Reject(() => Publish(), "unmarked root cannot be claimed");
@@ -40,6 +40,13 @@ static class PreparedModelCacheTests
             string ready = Path.Combine(first.Directory, ".agr_revit_bridge_prepared.json"), original = File.ReadAllText(ready);
             Check(Publish().Directory == first.Directory && File.ReadAllText(ready) == original && Directory.GetDirectories(cache).Length == 1, "repeat publish never rewrites immutable entry");
             Check(PreparedModelCache.TryGet(job, other, "2024", "24.2.20") == null, "source mismatch");
+            Check(PreparedModelCache.TryGet(job, other, "2024", "24.2.20", true, new string('c', 64))?.ModelPath == first.ModelPath, "explicit reuse ignores changed source");
+            Check(PreparedModelCache.TryGet(job, other, "2024", "24.2.20", true, new string('d',64)) == null, "a shared cache cannot substitute another source model");
+            var refreshed = PreparedModelCache.Publish(job, source, hash, "2019", "2024", "24.2.20", Array.Empty<string>(), Array.Empty<object>(), true, new string('c',64));
+            Check(refreshed.Directory != first.Directory, "force refresh writes a new verified copy");
+            first = refreshed;
+            ready = Path.Combine(first.Directory, ".agr_revit_bridge_prepared.json"); original = File.ReadAllText(ready);
+
             Check(PreparedModelCache.TryGet(job, hash, "2024", "24.2.21") == null, "exact build mismatch");
             Check(PreparedModelCache.TryGet(job, hash, "2025", "24.2.20") == null, "SDK year mismatch");
             File.WriteAllText(ready, original.Replace("\"policy\": 1", "\"policy\": 2"));

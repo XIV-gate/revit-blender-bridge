@@ -176,6 +176,18 @@ class CacheManagementTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             cache_management.project_cache('', '../relative-cache')
 
+    def test_source_cache_is_shared_across_unsaved_and_different_blender_scenes(self):
+        source = self.root / 'Building.rvt'
+        source.write_bytes(b'RVT')
+        expected = self.root / 'Building.Data'
+        self.assertEqual(cache_management.source_cache(source), expected)
+        self.assertFalse(expected.exists())
+        self.assertEqual(cache_management.source_cache(source, str(self.root / 'custom')), self.root / 'custom/Building.Data')
+        with self.assertRaises(ValueError):
+            cache_management.source_cache(self.root / 'missing.rvt')
+        with self.assertRaises(ValueError):
+            cache_management.source_cache('../relative.rvt')
+
     def test_job_markers_identify_owner_and_finished_sessions(self):
         session = JobSession.create(self.root)
         marker = json.loads((session.directory / JOB_MARKER).read_text())

@@ -12,6 +12,7 @@ import bpy
 from .core.catalog import annotate_catalog, initial_selection, selection_by_unique_id
 from .core.installer import manifest_matches
 from .core.jobs import JobSession, read_json, source_sha256
+from .core.model_lifecycle import preparation_options, preparation_key
 from .core.launcher import WorkerProcess
 from .core.revit_versions import inspect_revit
 from .core.reporting import report_entries, raw_values
@@ -88,6 +89,8 @@ class Runtime:
         self.force_scan_done = False
         self.timings = Timeline()
         self.timing_write_error = ''
+        self.cleanup_root = None
+        self.cleanup_summary = ''
 
     @property
     def scene(self):
@@ -133,6 +136,7 @@ class Runtime:
         self.conversion_selection_ids = None
         self.snapshot_selection_override = None
         self.conversion_remote_report = None
+        self.cleanup_root = None
 
 
 STATE = Runtime()
@@ -341,10 +345,13 @@ def begin_scan(scene, *, auto_import=False):
     props.scope_kind = props.scope_id = props.scope_label = ''
     props.selection_filter = 'all'
     props.catalog_source = ''
+    if STATE.session and (STATE.session.directory.parent != cache or STATE.scene != scene):
+        STATE.stop()
+        STATE.scene = scene
     if STATE.worker is None or STATE.worker.poll() is not None:
         STATE.session = JobSession.create(cache)
         STATE.worker = WorkerProcess()
-    request = STATE.session.request('scan', source_rvt=str(source), options={'load_links': props.load_links})
+    request = STATE.session.request('scan', source_rvt=str(source), options={'load_links': props.load_links, **preparation_options(props)})
     STATE.request_id = request['request_id']
     STATE.action = 'scan'
     STATE.started = time.monotonic()
@@ -364,6 +371,15 @@ def _load_catalog(path):
         raise ValueError('Не удалось прочитать каталог модели')
     catalog = annotate_catalog(catalog)
     props = STATE.props
+    provenance = catalog.get('source', {})
+    props.catalog_preparation_options = preparation_key(props)
+    props.catalog_revision = provenance.get('prepared_sha256') or provenance.get('sha256') or STATE.scanned_source_hash
+    props.prepared_copy_date = provenance.get('prepared_utc', '')[:19].replace('T', ' ')
+    props.prepared_copy_stale = bool(provenance.get('used_prepared_cache') and provenance.get('prepared_source_sha256')
+        and provenance['prepared_source_sha256'] != provenance.get('sha256') and provenance.get('prepared_sha256') != provenance.get('sha256'))
+    props.source_was_replaced = bool(provenance.get('source_replaced'))
+    if provenance.get('sha256'):
+        STATE.scanned_source_hash = provenance['sha256']
     choices = initial_selection(catalog, STATE.previous_selection)
     for item in catalog.get('elements', []):
         row = props.elements.add()
@@ -408,6 +424,9 @@ def begin_export(scene, *, force_refresh=False):
     source = Path(bpy.path.abspath(props.source_rvt)).resolve()
     if source != Path(props.catalog_source):
         raise ValueError('Файл RVT изменён в панели; сначала получите новый список')
+    if props.catalog_preparation_options and props.catalog_preparation_options != preparation_key(props):
+        begin_scan(scene, auto_import=True)
+        return
     ids = selected_ids(props)
     if not ids:
         raise ValueError('Не выбран ни один элемент')
@@ -425,10 +444,10 @@ def begin_export(scene, *, force_refresh=False):
     STATE.delta_ids = None
     STATE.file_root = None
     source_hash = source_sha256(source)
-    STATE.pending_snapshot_context = json.dumps(dict(format='native_family_v1', source=str(source), sha256=source_hash,
+    STATE.pending_snapshot_context = json.dumps(dict(format='native_family_v1', preparation=preparation_key(props), revision=props.catalog_revision, source=str(source), sha256=source_hash,
         exe=os.path.normcase(str(Path(bpy.path.abspath(props.revit_exe)).resolve())), detail=props.detail_level), sort_keys=True)
     import_mode=settings_mode(props)
-    STATE.pending_context = json.dumps(dict(format=8, source=str(source), sha256=source_hash,
+    STATE.pending_context = json.dumps(dict(format=9, preparation=preparation_key(props), revision=props.catalog_revision, source=str(source), sha256=source_hash,
         exe=os.path.normcase(str(Path(bpy.path.abspath(props.revit_exe)).resolve())),
         detail=props.detail_level, instances=import_mode!='OBJECTS', import_mode=import_mode, materials=props.import_materials,
         textures=props.import_textures, pack=props.pack_images, centered=props.center_model,
@@ -489,8 +508,10 @@ def begin_export(scene, *, force_refresh=False):
     from . import bl_info
     host = inspect_revit(bpy.path.abspath(props.revit_exe))
     key = '|'.join((host['key'], host.get('version', ''), os.path.normcase(str(Path(bpy.path.abspath(props.revit_exe)).resolve()))))
+    import hashlib
     STATE.cache_index = cache_root(props) / 'last_export.json'
     STATE.cache_signature = export_signature(source, ids, props.detail_level, key, '.'.join(map(str, bl_info['version'])))
+    STATE.cache_signature = hashlib.sha256((STATE.cache_signature + preparation_key(props) + props.catalog_revision).encode()).hexdigest()
     if not force_refresh and STATE.delta_ids is None and props.reuse_export_cache:
         manifest = lookup_export(STATE.cache_index, STATE.cache_signature)
         if manifest is not None:
@@ -523,7 +544,7 @@ def _start_conversion(manifest):
     target = manifest.with_name('scene.usdc')
     response = manifest.with_name('conversion.json')
     if STATE.file_root is not None or STATE.conversion_selection_ids is not None:
-        target = manifest.with_name('scene-' + uuid.uuid4().hex + '.usdc')
+        target = manifest.with_name('r' + uuid.uuid4().hex[:16] + '.usdc')
         response = target.with_suffix('.conversion.json')
     python_exe = Path(sys.prefix) / 'bin' / ('python.exe' if os.name == 'nt' else 'python3')
     if not python_exe.is_file():
@@ -624,6 +645,21 @@ def _apply_import():
              if STATE.pending_options.get('import_mode')=='FAMILY' else
              f"Импортировано: {result['placements']} объектов, {result['prototypes']} сеток.")
     _message('DONE', summary, progress=1)
+    if not props.keep_temporary_data:
+        from .workflow import cache_root, prepare_automatic_cleanup, finish_automatic_cleanup
+        root = cache_root(props)
+        try:
+            prepare_automatic_cleanup(STATE.scene, root)
+            if STATE.worker is not None and STATE.worker.poll() is None and STATE.session:
+                STATE.cleanup_root, STATE.cleanup_summary = root, summary
+                request = STATE.session.request('shutdown')
+                STATE.request_id = request['request_id']
+                STATE.action, STATE.started = 'shutdown', time.monotonic()
+                _message('CLOSING', 'Импорт завершён; закрытие Revit перед очисткой временных данных', busy=True)
+            else:
+                _warnings(raw_values(props.warnings) + ['Временные файлы сохранены: штатное завершение Revit не подтверждено.'])
+        except (OSError, ValueError, RuntimeError) as error:
+            _warnings(raw_values(props.warnings) + ['Импорт сохранён; временные файлы оставлены: ' + str(error)])
 
 
 def _fallback_full(message):
@@ -649,9 +685,20 @@ def tick():
             if response is not None and not response['success']:
                 raise RuntimeError(response.get('error', 'Revit не разрешил штатный выход; процесс оставлен открытым.'))
             if STATE.worker.poll() is not None:
+                response = response or STATE.session.read_response(STATE.request_id)
+                if response is None or not response.get('success') or STATE.worker.poll() != 0:
+                    raise RuntimeError('Штатное завершение Revit не подтверждено. Временные данные и диагностика сохранены.')
+                cleanup_root, cleanup_summary = STATE.cleanup_root, STATE.cleanup_summary
                 STATE.action = None
                 STATE.stop()
-                _message('IDLE', 'Рабочая копия Revit закрыта. Результат импорта сохранён.')
+                if cleanup_root is not None:
+                    from .workflow import finish_automatic_cleanup
+                    result = finish_automatic_cleanup(STATE.scene, cleanup_root)
+                    if result['errors']:
+                        _warnings(raw_values(STATE.props.warnings) + ['Очистка: ' + error for error in result['errors']])
+                    _message('DONE', cleanup_summary, progress=1)
+                else:
+                    _message('IDLE', 'Рабочая копия Revit закрыта. Результат импорта сохранён.')
                 return None
             if time.monotonic() - STATE.started > 30:
                 raise RuntimeError('Revit не завершил штатный выход за 30 секунд. Процесс оставлен открытым; используйте «Показать Revit».')

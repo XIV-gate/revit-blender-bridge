@@ -3,13 +3,14 @@ from pathlib import Path
 
 import bpy
 
-from .core.cache_management import project_cache, cache_summary, clear_completed
+from .core.cache_management import source_cache, cache_summary, clear_completed
 from .core.revit_versions import discover, inspect_revit
 
 
 def cache_root(props):
     override = bpy.path.abspath(props.cache_directory) if props.cache_directory else ''
-    return project_cache(bpy.data.filepath, override)
+    source = bpy.path.abspath(props.source_rvt)
+    return source_cache(source, override)
 
 
 def prepare_settings(scene):
@@ -40,7 +41,7 @@ def cache_info(props):
 def referenced_jobs(root):
     """Preserve jobs supplying external images/libraries/cache files to any scene."""
     result = set()
-    for value in bpy.utils.blend_paths(absolute=True, packed=True, local=False):
+    for value in bpy.utils.blend_paths(absolute=True, packed=False, local=False):
         path = Path(value).resolve()
         if path.is_relative_to(root):
             parts = path.relative_to(root).parts
@@ -71,3 +72,25 @@ def clean_cache(props):
     active = active_job()
     active = active if active is not None and active.is_relative_to(root) else None
     return clear_completed(root, active_directory=active, protected_directories=referenced_jobs(root))
+
+
+def prepare_automatic_cleanup(scene, root):
+    """Relink unpacked images before deleting any generated files."""
+    from .core.model_lifecycle import retain_texture
+    root = Path(root).resolve()
+    for image in bpy.data.images:
+        if image.source != 'FILE' or image.packed_file or image.users == 0:
+            continue
+        source = Path(bpy.path.abspath(image.filepath, library=image.library)).resolve()
+        if source.is_relative_to(root):
+            target = retain_texture(root, source)
+            image.filepath = str(target)
+    props = scene.xivgate_revit_bridge
+    props.import_manifest_path = ''
+    props.import_snapshot_context_json = ''
+    props.import_snapshot_selection_json = ''
+
+
+def finish_automatic_cleanup(scene, root):
+    root = Path(root).resolve()
+    return clear_completed(root, protected_directories=referenced_jobs(root))

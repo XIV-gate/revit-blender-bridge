@@ -90,7 +90,7 @@ static class ProtocolTests
     [MethodImpl(MethodImplOptions.NoInlining)]
     static int Run(string[] args)
     {
-        string root = Path.GetFullPath(args[0]); assertions += OfflineReferenceTests.Run(root); assertions += PreparedModelCacheTests.Run(root);
+        string root = Path.GetFullPath(args[0]); assertions += OfflineReferenceTests.Run(root); assertions += PreparedModelCacheTests.Run(root); assertions += SourceReplacementTests.Run(root);
         string sharingFile = Path.Combine(root, "atomic-sharing-" + Guid.NewGuid().ToString("N") + ".json");
         try {
             Protocol.Atomic(sharingFile, new { value = 1 });

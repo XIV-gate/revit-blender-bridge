@@ -77,7 +77,7 @@ with patch.object(runtime, 'WorkerProcess', TestWorker), patch.object(runtime, '
     runtime.begin_export(scene, force_refresh=True); wait()
     starts, before = len(TestWorker.started_executables), len(TestWorker.export_requests)
     props.pack_images = False  # Conversion-only change forces use of the verified export.
-    runtime.cancel()
+    runtime.cancel(); wait()
     runtime.begin_export(scene); wait()
     assert len(TestWorker.started_executables) == starts and len(TestWorker.export_requests) == before
     assert props.result_placements == 2 and runtime.STATE.file_root is not None
@@ -102,7 +102,7 @@ assert bpy.ops.xivgate_rbb.toggle_preview(kind='type', group_id=group.group_id, 
 assert not any(obj.get(PREVIEW_TAG) for obj in scene.objects)
 
 # Finish two artificial jobs. The unpacked image protects one; the other is disposable.
-runtime.cancel()
+runtime.cancel(); wait()
 cache = workflow.cache_root(props)
 protected = JobSession.create(cache)
 from fixture_cache import write_fixture

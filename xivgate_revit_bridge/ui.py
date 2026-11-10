@@ -82,6 +82,7 @@ def revit_installations(self, context):
 class RBB_OT_choose_revit(bpy.types.Operator):
     bl_idname = 'xivgate_rbb.choose_revit'
     bl_label = 'Выбрать установленный Revit'
+    bl_property = 'installation'
     bl_description = 'Найти версии 2024–2027 в стандартных папках и зарегистрированных установках Windows; выбрать одну для запуска'
     installation: EnumProperty(name='Версия Revit', items=revit_installations)
 
@@ -95,13 +96,8 @@ class RBB_OT_choose_revit(bpy.types.Operator):
             return {'CANCELLED'}
         current = bpy.path.abspath(context.scene.xivgate_revit_bridge.revit_exe)
         self.installation = next((row['path'] for row in found if row['path'] == current), found[0]['path'])
-        return context.window_manager.invoke_props_dialog(self, width=650)
-
-    def draw(self, context):
-        self.layout.prop(self, 'installation')
-        _wrapped(self.layout, self.installation, context, width=650)
-        _wrapped(self.layout, 'Будет запущена только выбранная версия Revit.', context, width=650)
-        _wrapped(self.layout, 'Для других установок используйте ручной путь в настройках подключения.', context, width=650)
+        context.window_manager.invoke_search_popup(self)
+        return {'RUNNING_MODAL'}
 
     def execute(self, context):
         props = context.scene.xivgate_revit_bridge
@@ -292,10 +288,21 @@ class RBB_Settings(bpy.types.PropertyGroup):
     release_version: EnumProperty(name='Версия', items=release_items, update=release_changed, options={'SKIP_SAVE'})
     source_rvt: StringProperty(name='Файл RVT', subtype='FILE_PATH')
     revit_exe: StringProperty(name='Revit.exe', subtype='FILE_PATH', default=_default_revit())
-    cache_directory: StringProperty(name='Рабочая папка', subtype='DIR_PATH', description='Необязательно. Если пусто — Data/Cache/RevitBridge рядом с текущим сохранённым .blend; своего пути по умолчанию в аддоне нет')
+    cache_directory: StringProperty(name='Рабочая папка', subtype='DIR_PATH', description='Необязательно. Если пусто — папка <имя модели>.Data рядом с выбранным RVT; сохранённая Blender-сцена не требуется')
     reuse_export_cache: BoolProperty(name='Использовать проверенный кэш выгрузки', default=True, description='Повторно использовать геометрию. Подготовленные RVT сохраняются автоматически: проверяются хеши исходника и копии, совместимость через Revit SDK. Новая выгрузка геометрии не требует повторного обновления версии RVT')
     catalog_worker_key: StringProperty()
     addin_folder: StringProperty(name='Каталог подключения Revit', subtype='DIR_PATH', description='Обычно определяется автоматически; нужен только при нестандартной установке')
+    overwrite_source: BoolProperty(name='Перезаписывать оригинал RVT', default=False,
+        description='Заменить выбранный оригинал подготовленной копией в версии выбранного Revit. При поиске даты может быть использована старая копия. Общая модель становится самостоятельным локальным снимком. Старые версии Revit не откроют обновлённый файл')
+    reuse_prepared_model: BoolProperty(name='Использовать подготовленную копию', default=True,
+        description='Искать подготовленный RVT в дате рядом с моделью и использовать его без открытия оригинала в Revit, даже если оригинал изменился. Если подходящей копии нет, подготовить оригинал заново')
+    keep_temporary_data: BoolProperty(name='Сохранять временные данные', default=True,
+        description='Оставлять подготовленный RVT и промежуточные файлы для повторного использования. Если выключено, очистить их после успешного импорта; необходимые неупакованные текстуры сохраняются')
+    catalog_preparation_options: StringProperty()
+    catalog_revision: StringProperty()
+    prepared_copy_date: StringProperty()
+    prepared_copy_stale: BoolProperty(default=False)
+    source_was_replaced: BoolProperty(default=False)
     preserve_instances: BoolProperty(default=True, update=legacy_instances_changed)
     import_mode: EnumProperty(name='Объекты', description='Структура результата: независимые объекты, редактируемые инстансы или семейства, объединённые до импорта в Blender', items=[
         ('OBJECTS','Отдельные объекты','Каждый элемент — отдельный объект с независимой сеткой'),
@@ -965,7 +972,6 @@ def draw_settings(layout, props):
     connection.label(text='Подключение Revit', icon='PLUGIN')
     connection.prop(props, 'revit_exe', text='Программа Revit')
     row = connection.row(align=True)
-    row.operator('xivgate_rbb.choose_revit', text='Автопоиск Revit', icon='VIEWZOOM')
     row.operator('xivgate_rbb.setup_revit', text='Подключить Revit', icon='PLUGIN')
     if runtime.STATE.worker is not None:
         row = connection.row(align=True)
@@ -988,7 +994,7 @@ def draw_settings(layout, props):
     storage.label(text='Рабочие данные', icon='FILE_FOLDER')
     storage.prop(props, 'cache_directory', text='Своя папка')
     if not props.cache_directory:
-        storage.label(text='Авто: рядом с .blend' if bpy.data.filepath else 'Авто: сначала сохраните .blend')
+        storage.label(text='Авто: <имя модели>.Data рядом с RVT')
     storage.prop(props, 'reuse_export_cache')
     storage.operator('xivgate_rbb.clear_cache', icon='TRASH')
 
@@ -1006,6 +1012,22 @@ class RBB_PT_panel(bpy.types.Panel):
         files = layout.column()
         files.enabled = not props.busy and not runtime.MAINTENANCE
         files.prop(props, 'source_rvt')
+        try:
+            from .core.revit_versions import inspect_revit
+            chosen = inspect_revit(bpy.path.abspath(props.revit_exe)) if props.revit_exe else None
+        except (OSError, ValueError, KeyError):
+            chosen = None
+        files.operator('xivgate_rbb.choose_revit', text=f"Revit {chosen['year']} · выбрать версию" if chosen else 'Выбрать установленный Revit', icon='DOWNARROW_HLT')
+        preparation = files.column(align=True)
+        preparation.prop(props, 'overwrite_source')
+        preparation.prop(props, 'reuse_prepared_model')
+        preparation.prop(props, 'keep_temporary_data')
+        if props.overwrite_source:
+            _wrapped(preparation, 'Оригинал будет заменён подготовленной копией, в том числе найденной в дате.', context, icon='ERROR')
+        if props.prepared_copy_date and props.reuse_prepared_model:
+            preparation.label(text='Копия: ' + props.prepared_copy_date)
+        if props.prepared_copy_stale and props.reuse_prepared_model:
+            _wrapped(preparation, 'Копия отличается от текущего RVT.', context, icon='INFO')
         row = files.row(align=True)
         row.operator('xivgate_rbb.scan', text='Получить список', icon='VIEWZOOM')
         box = layout.box()

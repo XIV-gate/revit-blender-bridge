@@ -41,6 +41,9 @@ def main():
     parser.add_argument('--revit', required=True)
     parser.add_argument('--timeout', type=float, default=240)
     parser.add_argument('--expect-dynamo-failure', action='store_true')
+    parser.add_argument('--no-reuse-prepared', action='store_true')
+    parser.add_argument('--discard-temporary', action='store_true')
+    parser.add_argument('--overwrite-fixture', action='store_true')
     parser.add_argument('--reference-probe', action='store_true', help='Use only with the test-only native reference-probe DLL')
     parser.add_argument('--category', action='append', default=[])
     parser.add_argument('--limit', type=int, default=32)
@@ -48,6 +51,8 @@ def main():
     root = Path(args.workspace).resolve(strict=True)
     assert root.drive.lower() == 'd:'
     source = Path(args.source).resolve(strict=True)
+    if args.overwrite_fixture and not source.is_relative_to(root / 'fixtures'):
+        raise ValueError('Source replacement tests require a disposable RVT inside this workspace/fixtures')
     before = source_sha256(source)
     loader = Path(ET.parse(args.registration).getroot().findtext('AddIn/Assembly')).resolve(strict=True)
     key_root = loader.parents[2]
@@ -94,7 +99,7 @@ def main():
 
     started = time.monotonic()
     try:
-        session.request('scan', str(source), options={'load_links': False})
+        session.request('scan', str(source), options={'load_links': False, 'reuse_prepared_model': not args.no_reuse_prepared, 'keep_temporary_data': not args.discard_temporary, 'overwrite_source': args.overwrite_fixture})
         process.start(args.revit, session.directory, session.token, {
             'XIVGATE_RBB_SESSION_ID': session.session_id,
             'XIVGATE_RBB_WORKER_VERSION': args.version,
@@ -131,7 +136,12 @@ def main():
         if args.expect_dynamo_failure:
             assert log.count('optional_addin_failure_closed') == 1, 'Expected real Dynamo failure was not exercised once'
             assert sum(r['id'] == 'dynamo_player_startup_failed' for r in report['warning_records']['records']) == 1
-        assert source_sha256(source) == before, 'Original RVT changed'
+        if not args.overwrite_fixture:
+            assert source_sha256(source) == before, 'Original RVT changed'
+        else:
+            manifest = read_json(exported['manifest_path'])
+            assert manifest['source']['source_replaced'] and manifest['source']['sha256'] == source_sha256(source)
+            report['source_replaced_verified'] = True
         report['success'] = True
     finally:
         if process.pid and process.poll() is None:

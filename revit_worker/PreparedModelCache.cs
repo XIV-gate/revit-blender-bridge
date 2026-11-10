@@ -16,6 +16,8 @@ public static class PreparedModelCache
     const int MaximumDescriptorBytes = 8 * 1024 * 1024;
     public sealed class Entry
     {
+        public string SourceSha256 { get; internal set; } = "";
+        public string CreatedUtc { get; internal set; } = "";
         public string ModelPath { get; internal set; } = "";
         public string SourceFormat { get; internal set; } = "";
         public string[] Warnings { get; internal set; } = Array.Empty<string>();
@@ -24,7 +26,7 @@ public static class PreparedModelCache
         public long ModelBytes { get; internal set; }
         public string Directory { get; internal set; } = "";
     }
-    public static Entry? TryGet(string jobRoot, string sourceSha, string revitYear, string revitBuild)
+    public static Entry? TryGet(string jobRoot, string sourceSha, string revitYear, string revitBuild, bool ignoreSourceChanges = false, string sourceIdentity = "")
     {
         ValidateKey(sourceSha, revitYear, revitBuild);
         string root = CacheRoot(jobRoot);
@@ -43,11 +45,13 @@ public static class PreparedModelCache
                 using var document = ReadBounded(ready);
                 var value = document.RootElement;
                 if (!Identity(value, "prepared_model") || !Integer(value, "policy", 1) ||
-                    Protocol.String(value, "entry_id") != id || Protocol.String(value, "source_sha256") != sourceSha ||
+                    Protocol.String(value, "entry_id") != id || !IsHash(Protocol.String(value, "source_sha256")) ||
+                    (!ignoreSourceChanges && Protocol.String(value, "source_sha256") != sourceSha) ||
                     Protocol.String(value, "revit_version") != revitYear || Protocol.String(value, "revit_build") != revitBuild ||
                     Protocol.String(value, "model_file") != "model.rvt") continue;
                 string hash = Protocol.String(value, "model_sha256"), format = Protocol.String(value, "source_format");
-                if (!IsHash(hash) || string.IsNullOrWhiteSpace(format) ||
+                if (!IsHash(hash) || (ignoreSourceChanges && Protocol.String(value, "source_sha256") != sourceSha && hash != sourceSha
+                    && (string.IsNullOrEmpty(sourceIdentity) || Protocol.String(value, "source_identity") != sourceIdentity)) || string.IsNullOrWhiteSpace(format) ||
                     !value.TryGetProperty("model_bytes", out var bytes) || !bytes.TryGetInt64(out long length) || length <= 0 ||
                     !DateTimeOffset.TryParseExact(Protocol.String(value, "created_utc"), "O", CultureInfo.InvariantCulture, DateTimeStyles.None, out _) ||
                     !value.TryGetProperty("warnings", out var warnings) || warnings.ValueKind != JsonValueKind.Array || warnings.EnumerateArray().Any(x => x.ValueKind != JsonValueKind.String) ||
@@ -57,7 +61,7 @@ public static class PreparedModelCache
                 string model = Protocol.Below(root, Path.Combine(directory, "model.rvt"));
                 using (var input = new FileStream(model, FileMode.Open, FileAccess.Read, FileShare.Read))
                     if (input.Length != length || Compat.Hex(Compat.Sha256(input)).ToLowerInvariant() != hash) continue;
-                return new Entry { Directory = directory, ModelPath = model, SourceFormat = format, ModelSha256 = hash, ModelBytes = length,
+                return new Entry { SourceSha256 = Protocol.String(value, "source_sha256"), CreatedUtc = Protocol.String(value, "created_utc"), Directory = directory, ModelPath = model, SourceFormat = format, ModelSha256 = hash, ModelBytes = length,
                     Warnings = warnings.EnumerateArray().Select(x => x.GetString()!).ToArray(), WarningRecords = records.EnumerateArray().Select(x => x.Clone()).ToArray() };
             } catch (Exception ex) when (ex is IOException || ex is JsonException || ex is InvalidDataException || ex is UnauthorizedAccessException || ex is InvalidOperationException) {
                 // Never repair or delete an untrusted/corrupt entry. Another immutable entry may be usable.
@@ -66,7 +70,7 @@ public static class PreparedModelCache
         return null;
     }
     public static Entry Publish(string jobRoot, string preparedPath, string sourceSha, string sourceFormat, string revitYear, string revitBuild,
-        IEnumerable<string> warnings, IEnumerable<object> warningRecords)
+        IEnumerable<string> warnings, IEnumerable<object> warningRecords, bool replaceExisting = false, string sourceIdentity = "")
     {
         ValidateKey(sourceSha, revitYear, revitBuild);
         string root = CacheRoot(jobRoot);
@@ -88,8 +92,8 @@ public static class PreparedModelCache
             Protocol.Atomic(Protocol.Below(root, Path.Combine(root, RootMarker)), new { schema = 1, package_id = Package, kind = "prepared_model_cache" });
         }
         ValidateRoot(root);
-        var existing = TryGet(jobRoot, sourceSha, revitYear, revitBuild);
-        if (existing != null) return existing;
+        var existing = TryGet(jobRoot, sourceSha, revitYear, revitBuild, replaceExisting, sourceIdentity);
+        if (existing != null && !replaceExisting) return existing;
         string id = Guid.NewGuid().ToString("N"), directory = Protocol.Below(root, Path.Combine(root, id));
         System.IO.Directory.CreateDirectory(directory);
         string model = Protocol.Below(root, Path.Combine(directory, "model.rvt"));
@@ -110,13 +114,23 @@ public static class PreparedModelCache
                 if (input.Length != size || Compat.Hex(Compat.Sha256(input)).ToLowerInvariant() != hash)
                     throw new IOException("Prepared RVT cache copy failed integrity verification.");
             if (size <= 0) throw new InvalidDataException("Empty copied model.");
-            var descriptor = new { schema = 1, package_id = Package, kind = "prepared_model", entry_id = id, policy = 1, source_sha256 = sourceSha,
+            var descriptor = new { schema = 1, package_id = Package, kind = "prepared_model", entry_id = id, policy = 1, source_sha256 = sourceSha, source_identity = sourceIdentity,
                 revit_version = revitYear, revit_build = revitBuild, source_format = sourceFormat, model_file = "model.rvt", model_sha256 = hash,
                 model_bytes = size, created_utc = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture), warnings = warningArray, warning_records = recordArray };
             if (System.Text.Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(descriptor, Protocol.Json)) > MaximumDescriptorBytes) throw new InvalidDataException("Prepared descriptor exceeds limit.");
             using var clonedRecords = JsonDocument.Parse(JsonSerializer.Serialize(recordArray));
             Protocol.Atomic(ready, descriptor);
-            return new Entry { Directory = directory, ModelPath = model, SourceFormat = sourceFormat, ModelSha256 = hash, ModelBytes = size,
+            if (existing != null) {
+                // Replace only the previously validated model for this build.
+                // A reader's Windows lock leaves the old entry for explicit cleanup.
+                try {
+                    NoLinks(existing.Directory);
+                    File.Delete(existing.ModelPath);
+                    File.Delete(Protocol.Below(root, Path.Combine(existing.Directory, ReadyMarker)));
+                    System.IO.Directory.Delete(existing.Directory, false);
+                } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            }
+            return new Entry { SourceSha256 = sourceSha, CreatedUtc = descriptor.created_utc, Directory = directory, ModelPath = model, SourceFormat = sourceFormat, ModelSha256 = hash, ModelBytes = size,
                 Warnings = warningArray, WarningRecords = clonedRecords.RootElement.EnumerateArray().Select(x => x.Clone()).ToArray() };
         } catch {
             // Only files allocated by this invocation, never an existing entry.

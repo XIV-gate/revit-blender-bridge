@@ -79,6 +79,14 @@ def _guard(value):
     return path
 
 
+def source_cache(source_path, override=''):
+    """A model-owned location shared by saved and unsaved Blender scenes."""
+    source = _guard(source_path)
+    if source.suffix.casefold() != '.rvt' or not source.is_file():
+        raise ValueError('Выберите существующий файл RVT')
+    return _guard(_guard(override) / (source.stem + '.Data')) if override else _guard(source.with_suffix('.Data'))
+
+
 def project_cache(blend_path, override=''):
     """Return a location without creating anything, including for an unsaved scene."""
     if override:

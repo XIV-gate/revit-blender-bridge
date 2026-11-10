@@ -25,6 +25,8 @@ internal sealed class WorkerImplementation : IExternalApplication
     readonly Dictionary<string, int> copyDialogAcknowledgements = new(StringComparer.Ordinal);
     Document? document;
     string original = "", originalHash = "", sourceVersion = "";
+    string preparedModelHash = "", preparedSourceHash = "", preparedDate = "";
+    bool usedPreparedCache, sourceReplaced;
     JsonElement active;
     bool busy, enabled, scanReady, idlingSeen;
     DateTime nextPoll;
@@ -184,6 +186,7 @@ internal sealed class WorkerImplementation : IExternalApplication
     void Scan(UIApplication ui, JsonElement request)
     {
         scanReady = false; warnings.Clear(); scanWarnings.Clear();
+        preparedModelHash = preparedSourceHash = preparedDate = ""; usedPreparedCache = sourceReplaced = false;
         copyDialogAcknowledgements.Clear();
         warnings.AddRange(startupWarnings);
         warningRecords.Clear();
@@ -202,13 +205,15 @@ internal sealed class WorkerImplementation : IExternalApplication
         original = Path.GetFullPath(source);
         using (var hashInput = File.OpenRead(copy)) originalHash = Compat.Hex(Compat.Sha256(hashInput)).ToLowerInvariant();
         bool links = request.TryGetProperty("options", out var opts) && opts.TryGetProperty("load_links", out var load) && load.ValueKind == JsonValueKind.True;
-        bool cacheAllowed = !links && (!request.TryGetProperty("options", out var cacheOptions) ||
-            !cacheOptions.TryGetProperty("reuse_prepared_model", out var reusePrepared) || reusePrepared.ValueKind != JsonValueKind.False);
+        bool reuse = !request.TryGetProperty("options", out var cacheOptions) || !cacheOptions.TryGetProperty("reuse_prepared_model", out var reusePrepared) || reusePrepared.ValueKind != JsonValueKind.False;
+        bool keep = !request.TryGetProperty("options", out var keepOptions) || !keepOptions.TryGetProperty("keep_temporary_data", out var keepData) || keepData.ValueKind != JsonValueKind.False;
+        bool overwrite = request.TryGetProperty("options", out var overwriteOptions) && overwriteOptions.TryGetProperty("overwrite_source", out var overwriteSource) && overwriteSource.ValueKind == JsonValueKind.True;
+        bool cacheAllowed = !links && reuse;
         PreparedModelCache.Entry? cached = null;
         if (cacheAllowed) {
             try {
                 Status("prepared_cache", "Проверка сохранённой подготовленной модели RVT", 0.025);
-                var entry = PreparedModelCache.TryGet(root, originalHash, ui.Application.VersionNumber, ui.Application.VersionBuild);
+                var entry = PreparedModelCache.TryGet(root, originalHash, ui.Application.VersionNumber, ui.Application.VersionBuild, true, SourceIdentity(original));
                 if (entry != null) {
                     string cachedCopy = Protocol.Below(Path.Combine(root, "input"), Path.Combine(root, "input", Protocol.String(request, "request_id") + "-cached.rvt"));
                     using (var input = new FileStream(entry.ModelPath, FileMode.Open, FileAccess.Read, FileShare.Read))
@@ -219,6 +224,9 @@ internal sealed class WorkerImplementation : IExternalApplication
                         if (!cachedInfo.IsSavedInCurrentVersion || (cachedInfo.IsWorkshared && OpenPolicy.NormalizeServerSnapshot(true, cachedInfo.CentralPath)))
                             throw new IOException("Подготовленный кэш несовместим с выбранным Revit.");
                     cached = entry; copy = cachedCopy;
+                    usedPreparedCache = true; preparedModelHash = entry.ModelSha256; preparedSourceHash = entry.SourceSha256; preparedDate = entry.CreatedUtc;
+                    if (preparedSourceHash != originalHash && entry.ModelSha256 != originalHash) warnings.Add("Использована ранее подготовленная копия: исходный RVT изменился. Для чтения актуального исходника выключите «Использовать подготовленную копию».");
+                    if (overwrite) warnings.Add("Оригинал RVT будет заменён найденной подготовленной копией, а не обновлён из текущего оригинала.");
                     warnings.Add("Использована проверенная подготовленная копия RVT; повторное обновление формата не выполнялось.");
                     warnings.AddRange(entry.Warnings.Select(value => "При первичной подготовке: " + value));
                     foreach (var record in entry.WarningRecords) warningRecords.Add(record);
@@ -359,7 +367,7 @@ internal sealed class WorkerImplementation : IExternalApplication
         try { document = ui.Application.OpenDocumentFile(modelPath, options); }
         finally { openingOwnedCopy = false; }
         if (failureAbortReason.Length > 0) throw new InvalidOperationException(failureAbortReason);
-        if (cacheAllowed && cached == null) {
+        if ((keep || overwrite) && cached == null) {
             try {
                 bool independent = true;
                 foreach (var id in ExternalFileUtils.GetAllExternalFileReferences(document)) {
@@ -367,7 +375,7 @@ internal sealed class WorkerImplementation : IExternalApplication
                     string kind = reference.ExternalFileReferenceType.ToString();
                     if (kind != "RevitLink" && kind != "KeynoteTable" && kind != "AssemblyCodeTable") independent = false;
                 }
-                if (independent) {
+                if (independent || overwrite) {
                     Status("caching_model", "Сохранение подготовленной модели для повторных загрузок", 0.12);
                     if (!normalized) {
                         string prepared = Protocol.Below(Path.Combine(root, "input"), Path.Combine(root, "input", Protocol.String(request, "request_id") + "-current.rvt"));
@@ -384,14 +392,18 @@ internal sealed class WorkerImplementation : IExternalApplication
                     }
                     if (failureAbortReason.Length > 0) throw new InvalidOperationException(failureAbortReason);
                     CheckCancel();
-                    var entry = PreparedModelCache.Publish(root, copy, originalHash, sourceVersion, ui.Application.VersionNumber,
-                        ui.Application.VersionBuild, warnings.ToArray(), warningRecords.ToArray());
-                    Log("Prepared model cache STORED; entry=" + entry.Directory + "; sha256=" + entry.ModelSha256);
+                    if (keep && independent && !links) {
+                        var entry = PreparedModelCache.Publish(root, copy, originalHash, sourceVersion, ui.Application.VersionNumber,
+                            ui.Application.VersionBuild, warnings.ToArray(), warningRecords.ToArray(), true, SourceIdentity(original));
+                        preparedModelHash = entry.ModelSha256; preparedSourceHash = originalHash; preparedDate = entry.CreatedUtc;
+                        Log("Prepared model cache STORED; entry=" + entry.Directory + "; sha256=" + entry.ModelSha256);
+                    }
                 } else {
                     Log("Prepared model cache skipped: external geometry references require fresh preparation.");
                     warnings.Add("Подготовленная модель не сохранена в повторный кэш: обнаружены внешние зависимости геометрии.");
                 }
             } catch (Exception ex) when (CacheFileError(ex) || ex is Autodesk.Revit.Exceptions.ApplicationException) {
+                if (overwrite) throw new IOException("Не удалось подготовить сохраняемый RVT; оригинал не заменён: " + ex.Message, ex);
                 Log("Prepared model cache store skipped: " + ex.Message);
                 warnings.Add("Не удалось сохранить подготовленный RVT в кэш; текущий импорт продолжается: " + ex.Message);
             }
@@ -418,6 +430,17 @@ internal sealed class WorkerImplementation : IExternalApplication
             var (bboxMin, bboxMax) = WorldBounds(e);
             rows.Add(new CatalogRow(e.Id.Value.ToString(), e.UniqueId, e.Name, e.Category.Id.Value.ToString(), e.Category.Name,
                 e.WorksetId.IntegerValue.ToString(), Workset(e), e.GetTypeId().Value.ToString(), typeName, familyName, bboxMin, bboxMax, recommendation, reason));
+        }
+        CheckCancel();
+        if (overwrite) {
+            if (failureAbortReason.Length > 0) throw new InvalidOperationException(failureAbortReason);
+            Status("replacing_source", cached != null ? "Замена оригинала найденной подготовленной копией RVT" : "Сохранение подготовленной модели вместо оригинала RVT", 0.95);
+            var replacement = SourceReplacement.Replace(root, original, copy, originalHash);
+            originalHash = replacement.Sha256;
+            if (replacement.RetainedBackup.Length > 0) warnings.Add("Оригинал заменён; временная резервная копия занята другим процессом и сохранена: " + replacement.RetainedBackup);
+            sourceReplaced = true;
+            warnings.Add("Оригинальный RVT заменён подготовленной локальной копией в версии Revit " + ui.Application.VersionNumber + ". Общая модель становится самостоятельным локальным снимком; синхронизация со старой центральной моделью не выполнялась.");
+            Log("Source replaced atomically; sha256=" + originalHash);
         }
         string catalog = Protocol.Below(root, Path.Combine(root, "catalog.json"));
         scanWarnings.Clear(); scanWarnings.AddRange(warnings);
@@ -457,7 +480,8 @@ internal sealed class WorkerImplementation : IExternalApplication
         if (!ui.CanPostCommand(exit)) throw new InvalidOperationException("Revit пока не может выполнить выход.");
         ui.PostCommand(exit); Respond(true);
     }
-    object Source() => new { path = original, sha256 = originalHash, revit_version = document?.Application.VersionNumber ?? "2027", revit_build = document?.Application.VersionBuild ?? "", original_version = sourceVersion };
+    static string SourceIdentity(string path) => Compat.Hex(Compat.Sha256(System.Text.Encoding.UTF8.GetBytes(Path.GetFullPath(path).ToUpperInvariant()))).ToLowerInvariant();
+    object Source() => new { path = original, sha256 = originalHash, revit_version = document?.Application.VersionNumber ?? "2027", revit_build = document?.Application.VersionBuild ?? "", original_version = sourceVersion, prepared_sha256 = preparedModelHash, prepared_source_sha256 = preparedSourceHash, prepared_utc = preparedDate, used_prepared_cache = usedPreparedCache, source_replaced = sourceReplaced };
     internal static string Workset(Element e) { try { return e.Document.GetWorksetTable().GetWorkset(e.WorksetId)?.Name ?? ""; } catch { return ""; } }
     static (string, string) Recommend(Element e)
     {
