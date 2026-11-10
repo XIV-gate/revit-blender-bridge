@@ -14,7 +14,7 @@ Tests only overwrite disposable input fixtures. Originals/preferences stay untou
 - [x] Worker: reuse/fresh, verified source replacement, provenance and safe failure.
 - [x] Blender: independent controls, installed-Revit choice, graceful post-import
       cleanup retaining every unpacked image actually referenced by Blender.
-- [ ] Native fixture matrix, isolated Blender 4.2/5.2 checks, six SDK builds,
+- [x] Native fixture matrix, isolated Blender 4.2/5.2 checks, six SDK builds,
       package/update tests and 0.5.5 Early Access release.
 
 Delete temporary files only after a successful import and graceful worker close.

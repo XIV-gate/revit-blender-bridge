@@ -589,3 +589,12 @@ assembly version changed in C#.
 - Candidate ZIP manifest validation, isolated installation/enabling, stable
   0.5.0 → 0.5.5 → 0.5.0 transitions and Scene lifecycle tests passed in both hosts.
   Frozen ABI 1 loader hashes remain unchanged.
+- Published v0.5.5 is Early Access. Anonymous GitHub discovery and actual ZIP
+  download/manifest checks passed from both isolated Blender hosts; v0.5.0
+  remains Latest stable. Published ZIP SHA-256:
+  `1a18f2a0800f2135c79d72f852b4082f0f3cc55f9982843f63b8793a68d12039`.
+- Test-only worker DLLs were moved out of the live runtime after verifying their
+  hashes and confirming all owned Revit test processes had exited. The live
+  Python add-on and Preferences were not overwritten. Approved prepared-model
+  migration copied the existing verified blob into the new model-owned Data;
+  original RVT and the previous cache were preserved.
