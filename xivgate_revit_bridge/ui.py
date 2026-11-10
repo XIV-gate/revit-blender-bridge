@@ -90,7 +90,13 @@ class RBB_OT_choose_revit(bpy.types.Operator):
         global _REVIT_ITEMS
         from .core.revit_versions import discover
         found = discover()
-        _REVIT_ITEMS = [(row['path'], f"Revit {row['year']} · {row['version']}", row['path']) for row in found]
+        from types import SimpleNamespace
+        items = []
+        for row in found:
+            state = runtime.connection_info(SimpleNamespace(revit_exe=row['path'], addin_folder=context.scene.xivgate_revit_bridge.addin_folder))
+            status = 'подключён' if state['connected'] else 'не подключён' if state['available'] else 'недоступен'
+            items.append((row['path'], f"Revit {row['year']} · {row['version']} · {status}", row['path'] + '\n' + state['message']))
+        _REVIT_ITEMS = items
         if not found:
             self.report({'INFO'}, 'Установки не найдены. Укажите путь Revit.exe вручную в настройках подключения.')
             return {'CANCELLED'}
@@ -288,7 +294,7 @@ class RBB_Settings(bpy.types.PropertyGroup):
     release_version: EnumProperty(name='Версия', items=release_items, update=release_changed, options={'SKIP_SAVE'})
     source_rvt: StringProperty(name='Файл RVT', subtype='FILE_PATH')
     revit_exe: StringProperty(name='Revit.exe', subtype='FILE_PATH', default=_default_revit())
-    cache_directory: StringProperty(name='Рабочая папка', subtype='DIR_PATH', description='Необязательно. Если пусто — папка <имя модели>.Data рядом с выбранным RVT; сохранённая Blender-сцена не требуется')
+    cache_directory: StringProperty(name='Рабочая папка', subtype='DIR_PATH', description='Базовая папка для отдельных каталогов <имя RVT>.Data. Если пусто, дата создаётся рядом с выбранным RVT; сохранённый .blend не требуется')
     reuse_export_cache: BoolProperty(name='Использовать проверенный кэш выгрузки', default=True, description='Повторно использовать геометрию. Подготовленные RVT сохраняются автоматически: проверяются хеши исходника и копии, совместимость через Revit SDK. Новая выгрузка геометрии не требует повторного обновления версии RVT')
     catalog_worker_key: StringProperty()
     addin_folder: StringProperty(name='Каталог подключения Revit', subtype='DIR_PATH', description='Обычно определяется автоматически; нужен только при нестандартной установке')
@@ -320,6 +326,8 @@ class RBB_Settings(bpy.types.PropertyGroup):
     center_model: BoolProperty(name='Разместить около начала координат', default=True, description='Общее смещение XY для превью и модели; высоты сохраняются', update=centering_changed)
     load_links: BoolProperty(default=False)
     detail_level: EnumProperty(name='Детализация', items=[('coarse', 'Низкая', ''), ('medium', 'Средняя', ''), ('fine', 'Высокая', '')], default='medium')
+    show_import_settings: BoolProperty(name='Настройки импорта', default=True, description='Геометрия, инстансы, материалы, текстуры и координаты импортируемой модели')
+    show_program_settings: BoolProperty(name='Настройки программы', default=False, description='Выбор и подключение версии Revit, расположение и хранение рабочих данных')
     show_advanced: BoolProperty(name='Настройки', default=False, description='Подключение Revit, параметры импорта и рабочие данные — каждый в своём разделе')
     list_mode: EnumProperty(name='Показать', items=[('categories', 'Категории', 'Группировать элементы по категориям Revit'),
         ('worksets', 'Рабочие наборы', 'Группировать элементы по рабочим наборам Revit'),
@@ -967,36 +975,59 @@ class RBB_OT_install_update(bpy.types.Operator):
             return {'CANCELLED'}
 
 
-def draw_settings(layout, props):
+def draw_import_settings(layout, props):
+    options = layout.box()
+    options.label(text='Геометрия', icon='MESH_DATA')
+    options.prop(props, 'import_mode')
+    if settings_mode(props) == 'INSTANCES':
+        options.prop(props, 'use_revit_instances')
+        options.prop(props, 'instance_tolerance_mm')
+    for field in ('detail_level', 'center_model', 'filter_remote_geometry'):
+        options.prop(props, field)
+    materials = layout.box()
+    materials.label(text='Материалы и текстуры', icon='MATERIAL')
+    for field in ('import_materials', 'import_textures', 'pack_images'):
+        materials.prop(props, field)
+    if props.import_id:
+        layout.operator('xivgate_rbb.import_selected', text='Перевыгрузить из Revit', icon='FILE_REFRESH').force_refresh = True
+
+
+def draw_program_settings(layout, props, context):
     connection = layout.box()
     connection.label(text='Подключение Revit', icon='PLUGIN')
-    connection.prop(props, 'revit_exe', text='Программа Revit')
-    row = connection.row(align=True)
-    row.operator('xivgate_rbb.setup_revit', text='Подключить Revit', icon='PLUGIN')
+    state = runtime.connection_info(props)
+    title = f"Revit {state['year']} · {state['version']}" if 'year' in state else 'Выбрать установленный Revit'
+    connection.operator('xivgate_rbb.choose_revit', text=title, icon='DOWNARROW_HLT')
+    _wrapped(connection, state['message'], context,
+             icon='CHECKMARK' if state['connected'] else 'INFO')
+    action = connection.row()
+    action.enabled = state['available']
+    action.operator('xivgate_rbb.setup_revit', text=('Переподключить' if state['connected'] else 'Подключить') +
+                    (f" Revit {state['year']}" if 'year' in state else ' Revit'), icon='PLUGIN')
+    connection.label(text='Ручной путь к Revit.exe')
+    connection.prop(props, 'revit_exe', text='')
     if runtime.STATE.worker is not None:
         row = connection.row(align=True)
         row.operator('xivgate_rbb.cancel', text='Закрыть рабочий Revit', icon='CANCEL')
         row.operator('xivgate_rbb.show_worker', text='Показать Revit', icon='WINDOW')
 
-    options = layout.box()
-    options.label(text='Настройки импорта', icon='IMPORT')
-    for field in ('import_mode', 'import_materials', 'import_textures',
-                  'pack_images', 'center_model', 'filter_remote_geometry', 'detail_level'):
-        options.prop(props, field)
-        if field == 'import_mode' and settings_mode(props)=='INSTANCES':
-            row = options.column(align=True)
-            row.prop(props, 'use_revit_instances')
-            row.prop(props, 'instance_tolerance_mm')
-    if props.import_id:
-        options.operator('xivgate_rbb.import_selected', text='Перевыгрузить из Revit', icon='FILE_REFRESH').force_refresh = True
-
     storage = layout.box()
-    storage.label(text='Рабочие данные', icon='FILE_FOLDER')
-    storage.prop(props, 'cache_directory', text='Своя папка')
+    storage.label(text='Подготовка RVT и рабочие данные', icon='FILE_FOLDER')
+    for field in ('overwrite_source', 'reuse_prepared_model', 'keep_temporary_data'):
+        storage.prop(props, field, text={'overwrite_source': 'Перезаписывать оригинал RVT', 'reuse_prepared_model': 'Использовать подготовленный RVT', 'keep_temporary_data': 'Сохранять данные после импорта'}[field])
+    storage.prop(props, 'reuse_export_cache', text='Использовать готовую геометрию')
+    if not props.keep_temporary_data:
+        storage.label(text='После импорта: удалить временные файлы' if props.pack_images else 'После импорта: оставить нужные текстуры')
+    storage.label(text='Базовая папка для данных (необязательно)')
+    storage.prop(props, 'cache_directory', text='')
     if not props.cache_directory:
-        storage.label(text='Авто: <имя модели>.Data рядом с RVT')
-    storage.prop(props, 'reuse_export_cache')
-    storage.operator('xivgate_rbb.clear_cache', icon='TRASH')
+        storage.label(text='Автоматически: рядом с выбранным RVT')
+    try:
+        root = workflow.cache_root(props)
+        _wrapped(storage, 'Данные этой модели: ' + str(root), context)
+    except (OSError, ValueError):
+        storage.label(text='Выберите RVT, чтобы увидеть папку данных')
+    storage.operator('xivgate_rbb.clear_cache', text='Очистить данные этой модели сейчас', icon='TRASH')
 
 
 class RBB_PT_panel(bpy.types.Panel):
@@ -1012,22 +1043,12 @@ class RBB_PT_panel(bpy.types.Panel):
         files = layout.column()
         files.enabled = not props.busy and not runtime.MAINTENANCE
         files.prop(props, 'source_rvt')
-        try:
-            from .core.revit_versions import inspect_revit
-            chosen = inspect_revit(bpy.path.abspath(props.revit_exe)) if props.revit_exe else None
-        except (OSError, ValueError, KeyError):
-            chosen = None
-        files.operator('xivgate_rbb.choose_revit', text=f"Revit {chosen['year']} · выбрать версию" if chosen else 'Выбрать установленный Revit', icon='DOWNARROW_HLT')
-        preparation = files.column(align=True)
-        preparation.prop(props, 'overwrite_source')
-        preparation.prop(props, 'reuse_prepared_model')
-        preparation.prop(props, 'keep_temporary_data')
         if props.overwrite_source:
-            _wrapped(preparation, 'Оригинал будет заменён подготовленной копией, в том числе найденной в дате.', context, icon='ERROR')
+            _wrapped(files, 'Оригинал будет заменён подготовленной копией, в том числе найденной в дате.', context, icon='ERROR')
         if props.prepared_copy_date and props.reuse_prepared_model:
-            preparation.label(text='Копия: ' + props.prepared_copy_date)
+            files.label(text='Копия: ' + props.prepared_copy_date)
         if props.prepared_copy_stale and props.reuse_prepared_model:
-            _wrapped(preparation, 'Копия отличается от текущего RVT.', context, icon='INFO')
+            _wrapped(files, 'Копия отличается от текущего RVT.', context, icon='INFO')
         row = files.row(align=True)
         row.operator('xivgate_rbb.scan', text='Получить список', icon='VIEWZOOM')
         box = layout.box()
@@ -1053,9 +1074,12 @@ class RBB_PT_panel(bpy.types.Panel):
             selection.label(text=f'Выбрано: {props.selected_count} / {len(props.elements)}')
         settings = layout.column()
         settings.enabled = not props.busy and not runtime.MAINTENANCE
-        settings.prop(props, 'show_advanced', icon='TRIA_DOWN' if props.show_advanced else 'TRIA_RIGHT', emboss=False)
-        if props.show_advanced:
-            draw_settings(settings, props)
+        settings.prop(props, 'show_import_settings', icon='TRIA_DOWN' if props.show_import_settings else 'TRIA_RIGHT', emboss=False)
+        if props.show_import_settings:
+            draw_import_settings(settings, props)
+        settings.prop(props, 'show_program_settings', icon='TRIA_DOWN' if props.show_program_settings else 'TRIA_RIGHT', emboss=False)
+        if props.show_program_settings:
+            draw_program_settings(settings, props, context)
         action = layout.row()
         action.enabled = not runtime.MAINTENANCE and not props.busy and bool(props.catalog_source) and props.selected_count > 0
         action.operator('xivgate_rbb.import_selected', text='Обновить импорт' if props.import_id else 'Импортировать выбранное', icon='IMPORT')

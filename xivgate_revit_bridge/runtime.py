@@ -28,13 +28,52 @@ def worker_path(props=None):
     return Path(override) if override else Path(__file__).parent / 'runtime' / 'revit' / key / version / 'XIVgate.RevitBridge.Worker.dll'
 
 
+def registration_options(props, year):
+    """An old year-specific override must not register another year's worker."""
+    if not props.addin_folder:
+        return {}
+    folder = Path(props.addin_folder)
+    label = folder.name.removeprefix('Revit ')
+    if len(label) == 4 and label.isdigit() and label != str(year):
+        return {}
+    return {'addin_folder': props.addin_folder}
+
+
 def setup_plan(props):
     from .core.installer import manifest_plan
     from .core.loader import ensure_loader
-    kwargs = {'addin_folder': props.addin_folder} if props.addin_folder else {}
     info = inspect_revit(bpy.path.abspath(props.revit_exe))
+    kwargs = registration_options(props, info['year'])
     entry = ensure_loader(Path(__file__).resolve().parent, info['key']) or worker_path(props)
     return manifest_plan(info['path'], entry, year=info['year'], **kwargs)
+
+
+def connection_info(props):
+    """Inspect the selected year's registration without extracting/installing files."""
+    from .core.installer import manifest_plan
+    from .core.loader import _payload, payload_record
+    try:
+        info = inspect_revit(bpy.path.abspath(props.revit_exe))
+        worker = worker_path(props)
+        if not worker.is_file():
+            return {**info, 'connected': False, 'available': False,
+                    'message': f"Нет обработчика для Revit {info['year']} в этом комплекте"}
+        addon = Path(__file__).resolve().parent
+        raw = _payload(addon)
+        entry = worker
+        if raw is not None:
+            relative, _, digest = payload_record(raw, info['key'])
+            entry = addon / relative
+            if entry.is_file() and source_sha256(entry) != digest:
+                return {**info, 'connected': False, 'available': True,
+                        'message': 'Загрузчик отличается от комплекта; требуется проверка установки'}
+        kwargs = registration_options(props, info['year'])
+        plan = manifest_plan(info['path'], entry, year=info['year'], **kwargs)
+        connected = manifest_matches(plan)
+        message = ('Подключён' if connected else 'Не подключён') + f" Revit {info['year']}"
+        return {**info, 'connected': connected, 'available': True, 'message': message, 'plan': plan}
+    except (OSError, ValueError, KeyError) as error:
+        return {'connected': False, 'available': False, 'message': str(error)}
 
 
 def selected_ids(props):

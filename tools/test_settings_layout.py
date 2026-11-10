@@ -19,7 +19,7 @@ class Layout:
     row = column
     box = column
     def label(self, *, text='', **kwargs):
-        if text in ('Подключение Revit', 'Настройки импорта', 'Рабочие данные'):
+        if text in ('Подключение Revit', 'Геометрия', 'Материалы и текстуры', 'Подготовка RVT и рабочие данные'):
             self.section = text
     def prop(self, data, field, **kwargs):
         self.calls.append((self.section, 'prop', field))
@@ -28,7 +28,8 @@ class Layout:
         return SimpleNamespace()
 
 props = bpy.context.scene.xivgate_revit_bridge
-props.show_advanced = True
+props.show_program_settings = True
+props.show_import_settings = True
 props.import_id = 'fixture-import'
 ui.runtime.STATE.worker = SimpleNamespace()
 layout = Layout()
@@ -37,22 +38,30 @@ ui.runtime.STATE.worker = None
 def locations(kind, name):
     return [section for section, category, value in layout.calls if category == kind and value == name]
 assert locations('prop', 'revit_exe') == ['Подключение Revit']
-assert locations('operator', 'xivgate_rbb.choose_revit') == ['main']
+assert locations('operator', 'xivgate_rbb.choose_revit') == ['Подключение Revit']
 assert locations('operator', 'xivgate_rbb.setup_revit') == ['Подключение Revit']
 assert locations('operator', 'xivgate_rbb.cancel') == ['Подключение Revit']
 assert not locations('prop', 'addin_folder')
-for field in ('import_mode', 'use_revit_instances', 'instance_tolerance_mm', 'import_materials', 'import_textures', 'pack_images', 'center_model', 'detail_level'):
-    assert locations('prop', field) == ['Настройки импорта'], (field, layout.calls)
-for field in ('cache_directory', 'reuse_export_cache'):
-    assert locations('prop', field) == ['Рабочие данные']
+for field in ('import_mode', 'use_revit_instances', 'instance_tolerance_mm', 'center_model', 'detail_level'):
+    assert locations('prop', field) == ['Геометрия'], (field, layout.calls)
+for field in ('import_materials', 'import_textures', 'pack_images'):
+    assert locations('prop', field) == ['Материалы и текстуры']
+for field in ('cache_directory', 'reuse_export_cache', 'overwrite_source', 'reuse_prepared_model', 'keep_temporary_data'):
+    assert locations('prop', field) == ['Подготовка RVT и рабочие данные']
 assert locations('prop', 'source_rvt') == ['main']
-for field in ('overwrite_source', 'reuse_prepared_model', 'keep_temporary_data'):
-    assert locations('prop', field) == ['main']
-assert locations('operator', 'xivgate_rbb.import_selected') == ['Настройки импорта', 'main']
-props.show_advanced = False
+assert locations('operator', 'xivgate_rbb.import_selected') == ['main', 'main']
+props.show_program_settings = False
 layout = Layout()
 ui.RBB_PT_panel.draw(SimpleNamespace(layout=layout), bpy.context)
 assert not any(field == 'revit_exe' for _, kind, field in layout.calls if kind == 'prop')
+assert locations('prop', 'import_mode') == ['Геометрия']
+props.show_program_settings = True
+props.show_import_settings = False
+layout = Layout()
+ui.RBB_PT_panel.draw(SimpleNamespace(layout=layout), bpy.context)
+assert not locations('prop', 'import_mode')
+assert locations('prop', 'revit_exe') == ['Подключение Revit']
+
 addon.unregister()
 assert not (Path(os.environ['BLENDER_USER_CONFIG']) / 'userpref.blend').exists()
 print('AGR_SETTINGS_LAYOUT passed', bpy.app.version_string)
