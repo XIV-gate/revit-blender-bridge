@@ -598,3 +598,24 @@ assembly version changed in C#.
   Python add-on and Preferences were not overwritten. Approved prepared-model
   migration copied the existing verified blob into the new model-owned Data;
   original RVT and the previous cache were preserved.
+
+
+## 0.5.6 Early Access — 2026-11-10
+
+- Import/program folds have independent saved booleans; import defaults open,
+  program defaults closed. Layout tests verify each control's group and both
+  independent fold states in isolated Blender 4.2.14 / 5.2.3.
+- Per-year connection tests use simulated 2024/2027 executables/worker files and
+  real owned manifest files inside the approved test workspace. Connecting one
+  year preserves the other's bytes. Reading status is checked with setup_plan
+  forbidden; year-mismatched legacy folder overrides are ignored safely.
+- Installed-program discovery on this machine found only Revit 2027.2. No real
+  2024 installation or native 2024 execution is claimed by the simulated test.
+- 251 pure Python tests completed, one privilege skip. All six SDK worker variants
+  compiled; only assembly version metadata changed in worker code. No new native
+  model opening run was needed for this UI/registration-planning change.
+- Existing 16 lifecycle combinations and automatic cleanup/packing/crash-retention
+  controller regressions passed in both isolated Blender hosts. Original RVT,
+  current live Blender scene, live registration and Preferences were not changed.
+- Final ZIP installed/enabled and switched 0.5.0 → 0.5.6 → 0.5.0 in both hosts;
+  frozen loader manifest hashes remained unchanged. Scene lifecycle tests passed.
