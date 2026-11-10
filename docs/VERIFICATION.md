@@ -510,3 +510,44 @@ assembly version changed in C#.
   production blend or user Preferences were overwritten. Owned Revit probes are
   closed; test payloads/profiles/reports are retained in the approved project Temp
   directory for reproducible diagnosis and are excluded from Git and release ZIPs.
+
+
+## 0.5.4 Early Access — 2026-11-10
+
+- 248 pure Python tests completed, one privilege-dependent skip. Prepared-cache
+  cleanup covers ownership, junctions, protected files, locks and 2 MiB warning
+  descriptors. Descriptor limits agree at 8 MiB on both sides.
+- 242 protocol assertions on .NET Framework 4.8 and 238 on .NET 8 / 10, including
+  25 prepared-cache checks: source/build invalidation, full SHA verification,
+  corruption rejection, immutable publication, partial-publication cleanup and
+  a write-capable source handle matching native Revit SaveAs behaviour.
+- Six worker variants compiled against Revit 2024–2027 APIs. Native application
+  execution was Revit 2027.2 only; 2024–2026 native execution remains untested.
+  Frozen ABI 1 loader hashes remain unchanged.
+- The supplied Revit 2019 model (1,135,845,376 bytes) had eight unavailable RSN
+  references. Before/after metadata preparation, 11 other streams and all 14
+  other CFB entries matched. Native TransmissionData read/write/read passed.
+  Upgrade completed in approximately 80 minutes and produced 226,815 catalog
+  elements; both analytical-model and missing-updater notices were acknowledged
+  by their exact dialog IDs. Native upgrade reported family repair/deletions;
+  these warnings are retained rather than claiming unchanged upgraded geometry.
+- The first export smoke selected non-geometric datum rows and correctly failed
+  with no geometry. The harness now chooses bounding-box-bearing recommended
+  elements and has regressions protecting that selection. Eight actual windows
+  then exported successfully. Actual payload imports passed isolated Blender
+  4.2.14 / 5.2.3 with eight placements, six mesh prototypes and preserved transforms.
+- The already-upgraded copy was seeded into the new prepared cache only after
+  checking its provenance and raw-source SHA. Opening the original 2019 input
+  then logged HIT, skipped format upgrade, scanned 226,815 rows in 54.3 seconds
+  and exported eight windows. Source SHA remained unchanged. Tiny native tests
+  additionally exercised automatic STORED then HIT across separate Revit runs.
+- Selective-export isolation passed 14 native baseline/current cases, covering
+  nested families, groups, assemblies, curtain components, railings and stairs.
+  Geometry/material/UV/ownership signatures matched; absolute placement error
+  stayed below 0.1 mm (maximum 0.03052 mm at large coordinates). Transaction
+  rollback preserved source documents. No full 226k-element import was attempted.
+- Atomic-transport regressions hold real Windows read handles: short locks retry,
+  permanent locks preserve the previous file; JSON parsing releases its handle.
+- Candidate ZIP installation, stable 0.5.0 → 0.5.4 → 0.5.0 switching, controller
+  subprocess integration, Scene lifecycle/cancellation and UI contract are tested
+  in isolated Blender profiles. Live scene and Preferences are not saved.

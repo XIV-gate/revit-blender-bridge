@@ -15,6 +15,9 @@
 | spatial_preview.py | Независимые превью слоёв и совмещение координат |
 | conversion.py | Промежуточный USD из выгрузки Revit |
 | revit_worker | C#-обработчик Revit API |
+| revit_worker/OfflineReferencePreparer.cs | Windows CFB и проверка внутренней XML-схемы серверных ссылок только в копии задания |
+| revit_worker/OfflineReferenceValidation.cs | Проверка подготовленных ссылок через Revit API до открытия документа |
+| revit_worker/PreparedModelCache.cs | Проверенный неизменяемый RVT-кэш по SHA исходника и точному build Revit |
 | tools / tests | Упаковка и изолированные проверки |
 
 ## Проверки
