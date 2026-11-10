@@ -18,6 +18,19 @@ from xivgate_revit_bridge.core.jobs import JobSession, atomic_write_json, read_j
 from xivgate_revit_bridge.core.launcher import WorkerProcess
 
 
+def select_smoke_ids(rows, limit=32, categories=()):
+    """Choose renderable model categories, never the first datum/curve rows."""
+    requested = {name.casefold() for name in categories}
+    candidates = [row for row in rows if row.get('bbox_min') is not None
+                  and (not requested or row.get('category_name', '').casefold() in requested)]
+    preferred = [row for row in candidates if row.get('recommendation') == 'include']
+    if not preferred:
+        # The synthetic native fixture consists of Generic Model DirectShapes.
+        generic = {'generic models', 'обобщенные модели', 'обобщённые модели'}
+        preferred = [row for row in candidates if row.get('category_name', '').casefold() in generic]
+    return [str(row['id']) for row in preferred[:limit]]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--workspace', required=True)
@@ -29,6 +42,8 @@ def main():
     parser.add_argument('--timeout', type=float, default=240)
     parser.add_argument('--expect-dynamo-failure', action='store_true')
     parser.add_argument('--reference-probe', action='store_true', help='Use only with the test-only native reference-probe DLL')
+    parser.add_argument('--category', action='append', default=[])
+    parser.add_argument('--limit', type=int, default=32)
     args = parser.parse_args()
     root = Path(args.workspace).resolve(strict=True)
     assert root.drive.lower() == 'd:'
@@ -100,12 +115,13 @@ def main():
             return
         catalog = read_json(scan['catalog_path'])
         rows = catalog['elements']
-        ids = [str(row['id']) for row in rows if row.get('bbox_min') is not None
-               and row.get('recommendation') != 'exclude'][:32]
+        ids = select_smoke_ids(rows, args.limit, args.category)
         assert ids, 'Fixture must contain geometric elements'
         report['catalog_elements'] = len(rows)
         report['selection_count'] = len(ids)
-        session.request('export', selection_ids=ids, options={'detail': 'Fine', 'materials': True, 'textures': True})
+        report['selected_ids'] = ids
+        del rows, catalog
+        session.request('export', selection_ids=ids, options={'detail_level': 'fine', 'materials': True, 'textures': True})
         exported = wait_response()
         if args.expect_dynamo_failure:
             assert sum('dynamo_player_startup_failed' in warning for warning in exported.get('warnings', [])) == 1

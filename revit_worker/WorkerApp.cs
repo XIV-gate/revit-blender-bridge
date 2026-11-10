@@ -183,7 +183,7 @@ internal sealed class WorkerImplementation : IExternalApplication
     }
     void Scan(UIApplication ui, JsonElement request)
     {
-        scanReady = false; scanWarnings.Clear();
+        scanReady = false; warnings.Clear(); scanWarnings.Clear();
         copyDialogAcknowledgements.Clear();
         warnings.AddRange(startupWarnings);
         warningRecords.Clear();
@@ -202,24 +202,52 @@ internal sealed class WorkerImplementation : IExternalApplication
         original = Path.GetFullPath(source);
         using (var hashInput = File.OpenRead(copy)) originalHash = Compat.Hex(Compat.Sha256(hashInput)).ToLowerInvariant();
         bool links = request.TryGetProperty("options", out var opts) && opts.TryGetProperty("load_links", out var load) && load.ValueKind == JsonValueKind.True;
-        if (!links) {
+        bool cacheAllowed = !links && (!request.TryGetProperty("options", out var cacheOptions) ||
+            !cacheOptions.TryGetProperty("reuse_prepared_model", out var reusePrepared) || reusePrepared.ValueKind != JsonValueKind.False);
+        PreparedModelCache.Entry? cached = null;
+        if (cacheAllowed) {
+            try {
+                Status("prepared_cache", "Проверка сохранённой подготовленной модели RVT", 0.025);
+                var entry = PreparedModelCache.TryGet(root, originalHash, ui.Application.VersionNumber, ui.Application.VersionBuild);
+                if (entry != null) {
+                    string cachedCopy = Protocol.Below(Path.Combine(root, "input"), Path.Combine(root, "input", Protocol.String(request, "request_id") + "-cached.rvt"));
+                    using (var input = new FileStream(entry.ModelPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    using (var output = new FileStream(cachedCopy, FileMode.CreateNew, FileAccess.Write, FileShare.None)) input.CopyTo(output);
+                    using (var input = File.OpenRead(cachedCopy))
+                        if (Compat.Hex(Compat.Sha256(input)).ToLowerInvariant() != entry.ModelSha256) throw new IOException("Копия кэша не прошла проверку SHA-256.");
+                    using (var cachedInfo = BasicFileInfo.Extract(cachedCopy))
+                        if (!cachedInfo.IsSavedInCurrentVersion || (cachedInfo.IsWorkshared && OpenPolicy.NormalizeServerSnapshot(true, cachedInfo.CentralPath)))
+                            throw new IOException("Подготовленный кэш несовместим с выбранным Revit.");
+                    cached = entry; copy = cachedCopy;
+                    warnings.Add("Использована проверенная подготовленная копия RVT; повторное обновление формата не выполнялось.");
+                    warnings.AddRange(entry.Warnings.Select(value => "При первичной подготовке: " + value));
+                    foreach (var record in entry.WarningRecords) warningRecords.Add(record);
+                    Log("Prepared model cache HIT; source format=" + entry.SourceFormat + "; entry=" + entry.Directory);
+                } else Log("Prepared model cache MISS.");
+            } catch (Exception ex) when (CacheFileError(ex) || ex is Autodesk.Revit.Exceptions.ApplicationException) {
+                Log("Prepared model cache lookup skipped: " + ex.Message);
+                warnings.Add("Кэш подготовленного RVT недоступен; модель будет подготовлена заново: " + ex.Message);
+            }
+        }
+        if (!links && cached == null) {
             Status("references", "Проверка серверных связей в рабочей копии RVT", 0.03);
             var preparedReferences = OfflineReferencePreparer.Prepare(root, Protocol.String(request, "session_id"), original, copy);
             if (preparedReferences.Ids.Length > 0) {
                 Log("Offline references prepared: " + string.Join(",", preparedReferences.Ids) + "; verified CFB entries=" + preparedReferences.VerifiedEntries);
-                OfflineReferenceValidation.Validate(copy, preparedReferences);
-                Log("Offline references validated by native Revit API.");
+                OfflineReferenceValidation.Canonicalize(copy, preparedReferences);
+                OfflineReferencePreparer.Verify(copy, preparedReferences);
+                Log("Offline references canonicalized and validated by native Revit API; other streams verified again.");
                 warnings.Add("Серверные связи отключены только в рабочей копии: " + preparedReferences.Ids.Length + "; ID: " + string.Join(", ", preparedReferences.Ids) + ". Остальные потоки RVT проверены по SHA-256.");
             }
         }
         using var info = BasicFileInfo.Extract(copy);
-        sourceVersion = info.Format;
+        sourceVersion = cached?.SourceFormat ?? info.Format;
         if (info.IsSavedInLaterVersion) throw new IOException("Модель создана в более новой версии Revit.");
         if (!info.IsSavedInCurrentVersion) warnings.Add("Модель " + info.Format + " обновляется только в рабочей копии; исходный RVT не сохраняется.");
         string centralPath = info.IsWorkshared ? info.CentralPath : "";
-        bool normalized = false;
+        bool normalized = cached != null;
         Log("Copy ready; source format " + info.Format + "; workshared=" + info.IsWorkshared + "; server-origin=" + OpenPolicy.NormalizeServerSnapshot(info.IsWorkshared, centralPath));
-        if (OpenPolicy.PrepareLocalWorksharedCopy(info.IsWorkshared, links)) {
+        if (cached == null && OpenPolicy.PrepareLocalWorksharedCopy(info.IsWorkshared, links)) {
             bool transmitted = TransmissionData.IsDocumentTransmitted(ModelPathUtils.ConvertUserVisiblePathToModelPath(copy));
             bool rebaseTransmitted = OpenPolicy.RebaseTransmittedCopy(info.IsWorkshared, transmitted, OpenPolicy.NormalizeServerSnapshot(info.IsWorkshared, centralPath));
             Log("Copied model transmitted=" + transmitted + "; rebase-transmitted=" + rebaseTransmitted);
@@ -324,13 +352,51 @@ internal sealed class WorkerImplementation : IExternalApplication
         using var worksets = new WorksetConfiguration(WorksetConfigurationOption.OpenAllWorksets);
         options.SetOpenWorksetsConfiguration(worksets);
         CheckCancel();
-        string openingMessage = normalized ? "Открытие подготовленной локальной копии RVT" : info.IsSavedInCurrentVersion ? "Открытие копии RVT" : "Обновление копии RVT с " + info.Format + " до " + ui.Application.VersionNumber + "; исходный файл не изменяется";
+        string openingMessage = cached != null ? "Открытие проверенной модели из кэша без обновления формата" : normalized ? "Открытие подготовленной локальной копии RVT" : info.IsSavedInCurrentVersion ? "Открытие копии RVT" : "Обновление копии RVT с " + info.Format + " до " + ui.Application.VersionNumber + "; исходный файл не изменяется";
         Status("opening", openingMessage, 0.08);
         ownedCopyPath = copy;
         openingOwnedCopy = true;
         try { document = ui.Application.OpenDocumentFile(modelPath, options); }
         finally { openingOwnedCopy = false; }
         if (failureAbortReason.Length > 0) throw new InvalidOperationException(failureAbortReason);
+        if (cacheAllowed && cached == null) {
+            try {
+                bool independent = true;
+                foreach (var id in ExternalFileUtils.GetAllExternalFileReferences(document)) {
+                    using var reference = ExternalFileUtils.GetExternalFileReference(document, id);
+                    string kind = reference.ExternalFileReferenceType.ToString();
+                    if (kind != "RevitLink" && kind != "KeynoteTable" && kind != "AssemblyCodeTable") independent = false;
+                }
+                if (independent) {
+                    Status("caching_model", "Сохранение подготовленной модели для повторных загрузок", 0.12);
+                    if (!normalized) {
+                        string prepared = Protocol.Below(Path.Combine(root, "input"), Path.Combine(root, "input", Protocol.String(request, "request_id") + "-current.rvt"));
+                        ownedCopyPath = prepared; openingOwnedCopy = true;
+                        try {
+                            using var save = new SaveAsOptions { OverwriteExistingFile = false, MaximumBackups = 1 };
+                            if (document.IsWorkshared) {
+                                using var shared = new WorksharingSaveAsOptions { SaveAsCentral = true };
+                                save.SetWorksharingOptions(shared);
+                            }
+                            document.SaveAs(prepared, save);
+                        } finally { openingOwnedCopy = false; }
+                        copy = prepared;
+                    }
+                    if (failureAbortReason.Length > 0) throw new InvalidOperationException(failureAbortReason);
+                    CheckCancel();
+                    var entry = PreparedModelCache.Publish(root, copy, originalHash, sourceVersion, ui.Application.VersionNumber,
+                        ui.Application.VersionBuild, warnings.ToArray(), warningRecords.ToArray());
+                    Log("Prepared model cache STORED; entry=" + entry.Directory + "; sha256=" + entry.ModelSha256);
+                } else {
+                    Log("Prepared model cache skipped: external geometry references require fresh preparation.");
+                    warnings.Add("Подготовленная модель не сохранена в повторный кэш: обнаружены внешние зависимости геометрии.");
+                }
+            } catch (Exception ex) when (CacheFileError(ex) || ex is Autodesk.Revit.Exceptions.ApplicationException) {
+                Log("Prepared model cache store skipped: " + ex.Message);
+                warnings.Add("Не удалось сохранить подготовленный RVT в кэш; текущий импорт продолжается: " + ex.Message);
+            }
+            if (failureAbortReason.Length > 0) throw new InvalidOperationException(failureAbortReason);
+        }
         foreach (var warning in document.GetWarnings()) {
             CaptureWarning("persistent", warning.GetFailureDefinitionId().Guid.ToString(), warning.GetDescriptionText(), warning.GetSeverity().ToString(),
                 warning.GetFailingElements().Select(id => id.Value.ToString()).ToArray(), "reported");
@@ -362,6 +428,7 @@ internal sealed class WorkerImplementation : IExternalApplication
         Respond(true, catalogPath: catalog);
         scanReady = true;
     }
+    static bool CacheFileError(Exception ex) => ex is IOException || ex is InvalidDataException || ex is UnauthorizedAccessException || ex is JsonException || ex is ArgumentException;
     void Export(JsonElement request)
     {
         if (!scanReady || document == null || !document.IsValidObject) throw new InvalidOperationException("Сначала успешно завершите сканирование текущего RVT.");

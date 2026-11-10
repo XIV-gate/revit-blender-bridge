@@ -35,7 +35,8 @@ internal sealed class GeometryExporter : IPhotoRenderContext
     readonly SortedDictionary<string, CacheDependency> cacheDependencies = new(StringComparer.OrdinalIgnoreCase);
     bool unresolvedTextures;
     List<string>? textureFiles;
-    long material = -1, triangles;
+    long material = -1, triangles, visitedElements, materialCallbacks;
+    readonly HashSet<long> isolation = new();
     sealed class Piece
     {
         public Element Element = null!;
@@ -55,6 +56,7 @@ internal sealed class GeometryExporter : IPhotoRenderContext
         this.binary = binary; this.selection = selection; this.canceled = canceled; this.warnings = warnings;
         transforms.Push(Transform.Identity);
         BuildOwnership();
+        BuildIsolation();
         spool = new FileStream(Path.Combine(output, ".geometry-spool.pending"), FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
     }
     void BuildOwnership()
@@ -65,13 +67,7 @@ internal sealed class GeometryExporter : IPhotoRenderContext
             while (queue.Count > 0) {
                 var id = queue.Dequeue(); if (!visited.Add(id.Value)) continue;
                 var e = doc.GetElement(id); if (e == null) continue;
-                IEnumerable<ElementId> children = Array.Empty<ElementId>();
-                if (e is AssemblyInstance assembly) children = assembly.GetMemberIds();
-                else if (e is Group group) children = group.GetMemberIds();
-                else if (e is Wall wall && wall.CurtainGrid != null) children = wall.CurtainGrid.GetPanelIds().Concat(wall.CurtainGrid.GetMullionIds());
-                else if (e is FamilyInstance family) children = family.GetSubComponentIds();
-                else if (e is Autodesk.Revit.DB.Architecture.Railing railing) children = railing.GetHandRails().Concat(new[] { railing.TopRail });
-                else if (e is Autodesk.Revit.DB.Architecture.Stairs stairs) children = stairs.GetStairsRuns().Concat(stairs.GetStairsLandings()).Concat(stairs.GetStairsSupports());
+                var children = OwnedChildren(e);
                 foreach (var child in children) {
                     if (child == ElementId.InvalidElementId) continue;
                     // A selected child owns its own mesh, yet deselecting it while keeping this
@@ -85,6 +81,37 @@ internal sealed class GeometryExporter : IPhotoRenderContext
                     if (!childOwners.ContainsKey(child.Value)) childOwners.Add(child.Value, owner);
                     queue.Enqueue(child);
                 }
+            }
+        }
+    }
+    static IEnumerable<ElementId> OwnedChildren(Element e)
+    {
+        if (e is AssemblyInstance assembly) return assembly.GetMemberIds();
+        if (e is Group group) return group.GetMemberIds();
+        if (e is Wall wall && wall.CurtainGrid != null) return wall.CurtainGrid.GetPanelIds().Concat(wall.CurtainGrid.GetMullionIds());
+        if (e is FamilyInstance family) return family.GetSubComponentIds();
+        if (e is Autodesk.Revit.DB.Architecture.Railing railing) return railing.GetHandRails().Concat(new[] { railing.TopRail });
+        if (e is Autodesk.Revit.DB.Architecture.Stairs stairs) return stairs.GetStairsRuns().Concat(stairs.GetStairsLandings()).Concat(stairs.GetStairsSupports());
+        return Array.Empty<ElementId>();
+    }
+    void BuildIsolation()
+    {
+        // Visibility is deliberately broader than mesh ownership. Keeping an enclosing
+        // group/assembly/shared family allows Revit to reach an independently selected
+        // child. Its siblings remain unowned and cannot enter the selected mesh.
+        // Autodesk requires every member of nested groups in the isolation set.
+        var queue = new Queue<ElementId>(selection.Select(id => new ElementId(id)));
+        while (queue.Count > 0) {
+            var id = queue.Dequeue();
+            if (id == ElementId.InvalidElementId || !isolation.Add(id.Value)) continue;
+            var element = doc.GetElement(id);
+            if (element == null) { isolation.Remove(id.Value); continue; }
+            foreach (var child in OwnedChildren(element)) queue.Enqueue(child);
+            queue.Enqueue(element.GroupId);
+            queue.Enqueue(element.AssemblyInstanceId);
+            if (element is FamilyInstance family) {
+                if (family.SuperComponent != null) queue.Enqueue(family.SuperComponent.Id);
+                if (family.Host is Wall host && host.CurtainGrid != null) queue.Enqueue(host.Id);
             }
         }
     }
@@ -110,6 +137,9 @@ internal sealed class GeometryExporter : IPhotoRenderContext
                     // Detach only OUR temporary view; rollback preserves all
                     // existing project views, templates and type defaults.
                     view.ViewTemplateId = ElementId.InvalidElementId;
+                    // Limit visibility before the first explicit regeneration. The exporter must
+                    // still traverse containers to reach independently selected descendants.
+                    view.IsolateElementsTemporary(context.isolation.OrderBy(id => id).Select(id => new ElementId(id)).ToArray());
                     doc.Regenerate();
                     if (!view.CanModifyDetailLevel()) throw new InvalidOperationException("Временный 3D-вид не позволяет задать детализацию после отключения шаблона.");
                     view.DetailLevel = detail.ToLowerInvariant() switch { "coarse" => ViewDetailLevel.Coarse, "fine" => ViewDetailLevel.Fine, _ => ViewDetailLevel.Medium };
@@ -139,7 +169,7 @@ internal sealed class GeometryExporter : IPhotoRenderContext
             catch (Exception ex) { externalReferences = true; warnings.Add("Невозможно подтвердить отсутствие внешних зависимостей для кэша: " + ex.Message); }
             var result = new { schema = 1, units = "metres", up = "Z", source, layout = "triangle_soup_float32_position_normal_uv_then_int64_material_per_triangle",
                 cache_dependencies = context.cacheDependencies.Values.ToArray(), cache_reusable = !context.unresolvedTextures && !externalReferences,
-                summary = new { occurrences = context.occurrences.Count, prototypes = context.prototypes.Count, triangles = context.triangles, materials = context.materials.Count, bytes },
+                summary = new { occurrences = context.occurrences.Count, prototypes = context.prototypes.Count, triangles = context.triangles, materials = context.materials.Count, bytes, visited_elements = context.visitedElements, material_callbacks = context.materialCallbacks, isolated_elements = context.isolation.Count },
                 prototypes = context.prototypes, occurrences = context.occurrences, materials = context.materials, warnings };
             // Directory is a new revision and never reused; only the manifest is promoted last.
             string pending = manifest + ".pending";
@@ -159,6 +189,7 @@ internal sealed class GeometryExporter : IPhotoRenderContext
     public void OnViewEnd(ElementId id) { }
     public RenderNodeAction OnElementBegin(ElementId id)
     {
+        visitedElements++;
         var ancestor = elements.Count == 0 ? null : elements.Peek().Target;
         Piece? piece = null;
         long ownerId = selection.Contains(id.Value) ? id.Value : childOwners.TryGetValue(id.Value, out long mapped) ? mapped : -1;
@@ -304,6 +335,7 @@ internal sealed class GeometryExporter : IPhotoRenderContext
     }
     public void OnMaterial(MaterialNode node)
     {
+        materialCallbacks++;
         long sourceMaterial = node.MaterialId.Value;
         var m = doc.GetElement(node.MaterialId) as Material;
         var props = new SortedDictionary<string, object>(StringComparer.Ordinal);

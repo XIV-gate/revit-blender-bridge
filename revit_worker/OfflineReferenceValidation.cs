@@ -6,6 +6,19 @@ namespace XIVgate.RevitBridge;
 
 public static class OfflineReferenceValidation
 {
+    public static void Canonicalize(string copy, OfflineReferencePreparer.Preparation prepared)
+    {
+        if (prepared.Ids.Length == 0) return;
+        Validate(copy, prepared);
+        // Once RSN resolution has been removed, let the public Revit writer
+        // serialize the final metadata. Never open a document to do this.
+        using (var path = new FilePath(copy))
+        using (var data = TransmissionData.ReadTransmissionData(path)) {
+            if (data == null) throw new IOException("Revit не прочитал подготовленные метаданные.");
+            TransmissionData.WriteTransmissionData(path, data);
+        }
+        Validate(copy, prepared);
+    }
     public static void Validate(string copy, OfflineReferencePreparer.Preparation prepared)
     {
         if (prepared.Ids.Length == 0) return;

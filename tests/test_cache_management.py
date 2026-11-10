@@ -26,6 +26,142 @@ class CacheManagementTests(unittest.TestCase):
         session.finish()
         return session
 
+    def prepared(self):
+        root = self.root / 'prepared_models'
+        root.mkdir(exist_ok=True)
+        (root / '.agr_revit_bridge_prepared_root.json').write_text(json.dumps({
+            'schema': 1, 'package_id': 'xivgate_revit_bridge', 'kind': 'prepared_model_cache'}))
+        directory = root / uuid.uuid4().hex
+        directory.mkdir()
+        (directory / 'model.rvt').write_bytes(b'prepared RVT')
+        marker = {'schema': 1, 'package_id': 'xivgate_revit_bridge', 'kind': 'prepared_model',
+                  'entry_id': directory.name, 'policy': 1, 'source_sha256': 'a' * 64,
+                  'revit_version': '2025', 'revit_build': '25.4', 'source_format': '2020',
+                  'model_file': 'model.rvt', 'model_sha256': 'b' * 64, 'model_bytes': 12,
+                  'created_utc': '2026-11-10T12:00:00Z', 'warnings': [], 'warning_records': []}
+        (directory / '.agr_revit_bridge_prepared.json').write_text(json.dumps(marker))
+        return directory
+
+    def test_prepared_models_count_and_clear_alongside_jobs(self):
+        job = self.finished()
+        model = self.prepared()
+        size = sum(path.stat().st_size for path in model.iterdir())
+        summary = cache_management.cache_summary(self.root)
+        self.assertEqual(summary['prepared_models'], 1)
+        self.assertEqual(summary['prepared_bytes'], size)
+        self.assertEqual(summary['eligible_prepared_models'], 1)
+        self.assertEqual(summary['eligible_prepared_directories'], [str(model)])
+        self.assertEqual(summary['eligible_jobs'], 1)
+        self.assertEqual(summary['total_bytes'], summary['eligible_bytes'])
+        result = cache_management.clear_completed(self.root)
+        self.assertEqual(result['deleted_models'], 1)
+        self.assertEqual(result['deleted_jobs'], 1)
+        self.assertEqual(result['deleted_bytes'], summary['eligible_bytes'])
+        self.assertFalse(model.exists())
+        self.assertFalse(job.directory.exists())
+        self.assertTrue(model.parent.is_dir())
+
+    def test_prepared_unknown_contents_missing_and_invalid_markers_are_preserved(self):
+        models = []
+        for change in ('extra', 'missing', 'broken', 'foreign', 'path'):
+            model = self.prepared()
+            models.append(model)
+            marker = model / '.agr_revit_bridge_prepared.json'
+            if change == 'extra':
+                (model / 'original.blend').write_bytes(b'keep')
+            elif change == 'missing':
+                marker.unlink()
+            elif change == 'broken':
+                marker.write_text('{broken')
+            else:
+                value = json.loads(marker.read_text())
+                value.update({'package_id': 'foreign'} if change == 'foreign' else {'model_file': '../outside.rvt'})
+                marker.write_text(json.dumps(value))
+        result = cache_management.clear_completed(self.root)
+        self.assertEqual(result['deleted_models'], 0)
+        self.assertTrue(result['errors'])
+        self.assertTrue(all(path.exists() for path in models))
+
+    def test_prepared_unmarked_or_malformed_root_is_never_deleted(self):
+        model = self.prepared()
+        marker = model.parent / '.agr_revit_bridge_prepared_root.json'
+        for content in ('{}', '{broken'):
+            marker.write_text(content)
+            result = cache_management.clear_completed(self.root)
+            self.assertEqual(result['deleted_models'], 0)
+            self.assertTrue(result['errors'])
+        marker.unlink()
+        self.assertEqual(cache_management.clear_completed(self.root)['deleted_models'], 0)
+        self.assertTrue(model.exists())
+
+    def test_prepared_large_warning_descriptor_can_be_cleaned(self):
+        model = self.prepared()
+        marker = model / cache_management.PREPARED_MARKER
+        value = json.loads(marker.read_text())
+        value['warnings'] = ['x' * (2 * 1024 * 1024)]
+        marker.write_text(json.dumps(value))
+        self.assertEqual(cache_management.cache_summary(self.root)['eligible_prepared_models'], 1)
+        self.assertEqual(cache_management.clear_completed(self.root)['deleted_models'], 1)
+        self.assertFalse(model.exists())
+
+    def test_prepared_locked_model_preserves_ownership_marker(self):
+        model = self.prepared()
+        original = Path.unlink
+        def locked(path, *args, **kwargs):
+            if path == model / 'model.rvt':
+                raise PermissionError('in use')
+            return original(path, *args, **kwargs)
+        with patch.object(Path, 'unlink', locked):
+            result = cache_management.clear_completed(self.root)
+        self.assertEqual(result['deleted_models'], 0)
+        self.assertTrue(result['errors'])
+        self.assertTrue((model / '.agr_revit_bridge_prepared.json').exists())
+
+    def test_prepared_reparse_and_protected_models_are_preserved(self):
+        model = self.prepared()
+        original = Path.lstat
+        def junction(path):
+            if path == model / 'model.rvt':
+                return SimpleNamespace(st_mode=stat.S_IFREG, st_file_attributes=0x400)
+            return original(path)
+        with patch.object(Path, 'lstat', junction):
+            self.assertEqual(cache_management.clear_completed(self.root)['deleted_models'], 0)
+        self.assertEqual(cache_management.clear_completed(self.root, protected_directories=[model / 'model.rvt'])['deleted_models'], 0)
+        self.assertTrue(model.exists())
+
+    def test_prepared_rechecks_marker_and_refuses_nested_or_outside_summary_paths(self):
+        model = self.prepared()
+        nested = model / uuid.uuid4().hex
+        nested.mkdir()
+        outside = self.root / 'original.rvt'
+        outside.write_bytes(b'original')
+        original = cache_management.cache_summary
+        def changed(*args, **kwargs):
+            summary = original(*args, **kwargs)
+            summary['eligible_prepared_directories'] = [str(model), str(nested), str(outside)]
+            (model / '.agr_revit_bridge_prepared.json').unlink()
+            return summary
+        with patch.object(cache_management, 'cache_summary', changed):
+            result = cache_management.clear_completed(self.root)
+        self.assertEqual(result['deleted_models'], 0)
+        self.assertTrue(result['errors'])
+        self.assertTrue(nested.exists())
+        self.assertEqual(outside.read_bytes(), b'original')
+
+    def test_prepared_root_and_entry_reparse_are_never_followed(self):
+        model = self.prepared()
+        original = Path.lstat
+        for blocked in (model.parent, model):
+            def junction(path):
+                if path == blocked:
+                    return SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0x400)
+                return original(path)
+            with patch.object(Path, 'lstat', junction):
+                result = cache_management.clear_completed(self.root)
+                self.assertEqual(result['deleted_models'], 0)
+                self.assertTrue(result['errors'])
+        self.assertTrue((model / 'model.rvt').exists())
+
     def test_saved_project_cache_is_deterministic_and_never_creates_directories(self):
         blend = self.root / 'scene.blend'
         blend.write_bytes(b'scene')

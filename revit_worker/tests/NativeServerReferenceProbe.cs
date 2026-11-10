@@ -55,7 +55,7 @@ public sealed class WorkerApp : IExternalApplication
             var prepared = OfflineReferencePreparer.Prepare(root, session, source, copy);
             Log("Prepared " + prepared.Ids.Length + "; verified entries=" + prepared.VerifiedEntries);
             var nativeTimer = Stopwatch.StartNew();
-            OfflineReferenceValidation.Validate(copy, prepared);
+            OfflineReferenceValidation.Canonicalize(copy, prepared);
             nativeTimer.Stop();
             Log("Native metadata validation returned");
             OfflineReferencePreparer.Verify(copy, prepared);

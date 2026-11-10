@@ -293,7 +293,7 @@ class RBB_Settings(bpy.types.PropertyGroup):
     source_rvt: StringProperty(name='Файл RVT', subtype='FILE_PATH')
     revit_exe: StringProperty(name='Revit.exe', subtype='FILE_PATH', default=_default_revit())
     cache_directory: StringProperty(name='Рабочая папка', subtype='DIR_PATH', description='Необязательно. Если пусто — Data/Cache/RevitBridge рядом с текущим сохранённым .blend; своего пути по умолчанию в аддоне нет')
-    reuse_export_cache: BoolProperty(name='Использовать проверенный кэш выгрузки', default=True)
+    reuse_export_cache: BoolProperty(name='Использовать проверенный кэш выгрузки', default=True, description='Повторно использовать геометрию. Подготовленные RVT сохраняются автоматически: проверяются хеши исходника и копии, совместимость через Revit SDK. Новая выгрузка геометрии не требует повторного обновления версии RVT')
     catalog_worker_key: StringProperty()
     addin_folder: StringProperty(name='Каталог подключения Revit', subtype='DIR_PATH', description='Обычно определяется автоматически; нужен только при нестандартной установке')
     preserve_instances: BoolProperty(default=True, update=legacy_instances_changed)
@@ -769,8 +769,8 @@ class RBB_OT_show_worker(bpy.types.Operator):
 
 class RBB_OT_cache(bpy.types.Operator):
     bl_idname = 'xivgate_rbb.clear_cache'
-    bl_label = 'Очистить завершённые задания'
-    bl_description = 'Показать объём завершённых заданий и подтвердить очистку; используемые текущей сценой файлы защищены'
+    bl_label = 'Очистить кэш'
+    bl_description = 'Очистить завершённые задания и подготовленные RVT; старые модели затем обновятся заново. Используемые текущей сценой файлы защищены'
 
     def invoke(self, context, event):
         try:
@@ -782,9 +782,9 @@ class RBB_OT_cache(bpy.types.Operator):
 
 
     def draw(self, context):
-        _wrapped(self.layout, f"Завершённых заданий: {self.info['eligible_jobs']}; {self.info['eligible_bytes'] / 1024**2:.1f} МБ", context, width=600)
+        _wrapped(self.layout, f"Завершённых заданий: {self.info['eligible_jobs']}; подготовленных RVT: {self.info['eligible_prepared_models']}; {self.info['eligible_bytes'] / 1024**2:.1f} МБ", context, width=600)
         _wrapped(self.layout, self.info['root'], context, width=600)
-        _wrapped(self.layout, 'Для следующего импорта может потребоваться новая выгрузка.', context, width=600)
+        _wrapped(self.layout, 'После очистки потребуется новая выгрузка, а старые RVT при следующем открытии обновятся заново.', context, width=600)
         _wrapped(self.layout, 'Активные и неизвестные каталоги сохраняются.', context, width=600)
         _wrapped(self.layout, 'Файлы, используемые текущими сценами, тоже сохраняются.', context, width=600)
 
@@ -792,7 +792,7 @@ class RBB_OT_cache(bpy.types.Operator):
         try:
             result = workflow.clean_cache(context.scene.xivgate_revit_bridge)
             self.report({'WARNING'} if result['errors'] else {'INFO'},
-                        f"Удалено заданий: {result['deleted_jobs']}; ошибок: {len(result['errors'])}")
+                        f"Удалено заданий: {result['deleted_jobs']}; подготовленных RVT: {result['deleted_models']}; ошибок: {len(result['errors'])}")
             return {'FINISHED'}
         except Exception as error:
             self.report({'ERROR'}, str(error))
