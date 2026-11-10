@@ -3,10 +3,12 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+import threading
+import time
 from unittest.mock import patch, Mock
 
 from xivgate_revit_bridge.core.catalog import annotate_catalog, initial_selection, selection_by_unique_id, set_group_selection
-from xivgate_revit_bridge.core.jobs import JobSession, atomic_write_json, contained_path
+from xivgate_revit_bridge.core.jobs import JobSession, atomic_write_json, contained_path, read_json
 from xivgate_revit_bridge.core.installer import manifest_plan, install_manifest, manifest_matches
 from xivgate_revit_bridge.core.launcher import WorkerProcess
 import xml.etree.ElementTree as ET
@@ -25,6 +27,41 @@ class CoreTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows file sharing contract')
+    def test_poll_reader_closes_file_before_parsing_its_snapshot(self):
+        path = self.root / 'status.json'
+        atomic_write_json(path, {'value': 'before'})
+        load = json.loads
+
+        def replace_while_parsing(text, **kwargs):
+            atomic_write_json(path, {'value': 'after'})
+            return load(text, **kwargs)
+
+        with patch('xivgate_revit_bridge.core.jobs.json.loads', side_effect=replace_while_parsing):
+            self.assertEqual(read_json(path), {'value': 'before'})
+        self.assertEqual(read_json(path), {'value': 'after'})
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows file sharing contract')
+    def test_atomic_writer_retries_short_locks_but_preserves_data_on_permanent_lock(self):
+        path = self.root / 'status.json'
+        atomic_write_json(path, {'value': 'before'})
+        reader = path.open('rb')
+        release = threading.Thread(target=lambda: (time.sleep(.1), reader.close()))
+        release.start()
+        try:
+            atomic_write_json(path, {'value': 'after'})
+        finally:
+            release.join()
+            reader.close()
+        self.assertEqual(read_json(path), {'value': 'after'})
+        started = time.monotonic()
+        with path.open('rb'):
+            with self.assertRaises(PermissionError):
+                atomic_write_json(path, {'value': 'must not replace'})
+        self.assertLess(time.monotonic() - started, 4)
+        self.assertEqual(read_json(path), {'value': 'after'})
+        self.assertEqual(list(self.root.glob('.agr-*.tmp')), [])
 
     def test_selection_defaults_and_preservation(self):
         values = initial_selection(CATALOG, {'a': False, 'c': True})

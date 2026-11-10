@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Diagnostics;
 using System.Security.Cryptography;
+using System.Threading;
 
 namespace XIVgate.RevitBridge;
 
@@ -40,13 +41,25 @@ public static class Compat
     }
     public static void ReplaceFile(string source, string destination)
     {
+        for (int attempt = 0; ; attempt++) {
+            try {
 #if NETFRAMEWORK
-        if (File.Exists(destination)) File.Replace(source, destination, null);
-        else File.Move(source, destination);
+                if (File.Exists(destination)) File.Replace(source, destination, null);
+                else File.Move(source, destination);
 #else
-        File.Move(source, destination, true);
+                File.Move(source, destination, true);
 #endif
+                return;
+            } catch (Exception ex) when (attempt < 20 && TransientFileAccess(ex)) {
+                // An observer/antivirus may briefly deny delete sharing on the
+                // old snapshot. Retry the atomic rename, never truncate it.
+                Thread.Sleep(25);
+            }
+        }
     }
+    static bool TransientFileAccess(Exception ex) =>
+        (ex is IOException || ex is UnauthorizedAccessException) &&
+        ((ex.HResult & 0xffff) == 5 || (ex.HResult & 0xffff) == 32 || (ex.HResult & 0xffff) == 33);
     public static byte[] Sha256(byte[] bytes) { using var hash = SHA256.Create(); return hash.ComputeHash(bytes); }
     public static byte[] Sha256(Stream stream) { using var hash = SHA256.Create(); return hash.ComputeHash(stream); }
     public static string Hex(byte[] bytes) => BitConverter.ToString(bytes).Replace("-", "");

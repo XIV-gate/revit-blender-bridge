@@ -6,6 +6,7 @@ from pathlib import Path
 import os
 import secrets
 import uuid
+import time
 
 JOB_MARKER = '.agr_revit_bridge_job.json'
 FINISH_MARKER = '.agr_revit_bridge_finished.json'
@@ -34,15 +35,24 @@ def atomic_write_json(path, value):
             json.dump(value, stream, ensure_ascii=False, allow_nan=False)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        for attempt in range(21):
+            try:
+                os.replace(temporary, path)
+                break
+            except OSError as exc:
+                if attempt == 20 or os.name != 'nt' or getattr(exc, 'winerror', None) not in (5, 32, 33):
+                    raise
+                time.sleep(.025)
     finally:
         temporary.unlink(missing_ok=True)
 
 
 def read_json(path):
     try:
-        with Path(path).open(encoding='utf-8-sig') as stream:
-            value = json.load(stream)
+        # Release the Windows file handle before parsing. A polling reader
+        # must not hold the writer's old snapshot throughout JSON decoding.
+        text = Path(path).read_text(encoding='utf-8-sig')
+        value = json.loads(text)
         return value if isinstance(value, dict) else None
     except (OSError, ValueError, UnicodeError):
         return None

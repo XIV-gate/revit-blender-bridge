@@ -425,6 +425,11 @@ internal sealed class WorkerImplementation : IExternalApplication
         try {
             var accessor = e.GetFailuresAccessor();
             if (!accessor.IsActive()) return;
+            var failures = accessor.GetFailureMessages();
+            // Revit also raises this event for successful temporary-family
+            // transactions during upgrades. Empty events have nothing to handle
+            // or report; avoid a log append + atomic JSON rewrite for each one.
+            if (failures.Count == 0) return;
             var failedDocument = accessor.GetDocument();
             // Revit may return a different managed wrapper. SDK Equals compares the underlying
             // open document; ReferenceEquals fails, and detached copies deliberately have no PathName.
@@ -433,7 +438,7 @@ internal sealed class WorkerImplementation : IExternalApplication
             if (!ownDocument) {
                 Log("Failure event outside verified copied document; left unchanged: " + failedDocument.Title);
                 bool unverifiedError = false;
-                foreach (var failure in accessor.GetFailureMessages()) {
+                foreach (var failure in failures) {
                     string severity = failure.GetSeverity().ToString();
                     unverifiedError |= WarningPolicy.IsError(severity);
                     CaptureWarning("failures_processing_unverified_document", failure.GetFailureDefinitionId().Guid.ToString(), failure.GetDescriptionText(), severity,
@@ -448,7 +453,7 @@ internal sealed class WorkerImplementation : IExternalApplication
             }
             bool errors = false, deleted = false;
             var errorDescriptions = new List<string>();
-            foreach (var failure in accessor.GetFailureMessages()) {
+            foreach (var failure in failures) {
                 string severity = failure.GetSeverity().ToString();
                 bool warning = WarningPolicy.DeleteWarning(severity);
                 errors |= WarningPolicy.IsError(severity);

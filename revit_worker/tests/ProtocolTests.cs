@@ -91,6 +91,28 @@ static class ProtocolTests
     static int Run(string[] args)
     {
         string root = Path.GetFullPath(args[0]); assertions += OfflineReferenceTests.Run(root);
+        string sharingFile = Path.Combine(root, "atomic-sharing-" + Guid.NewGuid().ToString("N") + ".json");
+        try {
+            Protocol.Atomic(sharingFile, new { value = 1 });
+            var reader = new FileStream(sharingFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            var release = new Thread(() => { Thread.Sleep(100); reader.Dispose(); });
+            release.Start();
+            try { Protocol.Atomic(sharingFile, new { value = 2 }); }
+            finally { release.Join(); reader.Dispose(); }
+            using var updated = Protocol.Read(sharingFile);
+            Check(updated.RootElement.GetProperty("value").GetInt32() == 2, "temporary Windows reader lock must not abort an operation");
+            var elapsed = System.Diagnostics.Stopwatch.StartNew();
+            bool blocked = false;
+            using (var foreignReader = new FileStream(sharingFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)) {
+                try { Protocol.Atomic(sharingFile, new { value = 3 }); }
+                catch (UnauthorizedAccessException) { blocked = true; }
+                catch (IOException) { blocked = true; }
+            }
+            Check(blocked && elapsed.Elapsed.TotalSeconds < 4, "permanent access failure is bounded, never an infinite retry");
+            using var preserved = Protocol.Read(sharingFile);
+            Check(preserved.RootElement.GetProperty("value").GetInt32() == 2, "failed atomic replacement preserves the old response");
+            Check(Directory.GetFiles(root, Path.GetFileName(sharingFile) + ".*.pending").Length == 0, "failed atomic replacement cleans its own pending file");
+        } finally { if (File.Exists(sharingFile)) File.Delete(sharingFile); }
         string file = Path.Combine(root, "protocol-" + Guid.NewGuid().ToString("N") + ".json");
         try {
 #if NETFRAMEWORK
