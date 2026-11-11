@@ -734,6 +734,46 @@ def _restore_no_clobber(source, target, backup_directory):
                           'сохранены копии: ' + str(backup_directory) + ' и ' + str(source)) from error
 
 
+def _matching_blender_loader(old_assembly, new_assembly, addon_root):
+    """Recognize only a frozen loader in a sibling Blender version profile."""
+    from .jobs import source_sha256
+    root = _reject_links(addon_root)
+    old = _reject_links(old_assembly)
+    new = _reject_links(new_assembly)
+    if root.name != PACKAGE_ID or root.parent.name != 'addons' or root.parent.parent.name != 'scripts':
+        return False
+    profile = root.parent.parent.parent
+    if not re.fullmatch(r'[1-9][0-9]*\.[0-9]+', profile.name):
+        return False
+    try:
+        relative = old.relative_to(profile.parent)
+    except ValueError:
+        return False
+    parts = relative.parts
+    if (len(parts) != 10 or parts[0] == profile.name
+            or not re.fullmatch(r'[1-9][0-9]*\.[0-9]+', parts[0])
+            or parts[1:5] != ('scripts', 'addons', PACKAGE_ID, 'runtime')
+            or parts[5] != 'revit' or parts[6] not in {'2024', '2025', '2025-net10', '2026', '2026-net10', '2027'}
+            or parts[7:] != ('loader', '1', 'XIVgate.RevitBridge.Loader.dll')):
+        return False
+    expected = root.joinpath(*parts[4:])
+    return (new == expected and old.is_file() and new.is_file()
+            and source_sha256(old) == source_sha256(new))
+
+
+def can_migrate_blender_registration(plan, addon_root):
+    """Read-only eligibility check for the ordinary scan's automatic reconnect."""
+    try:
+        target = _reject_links(plan['path'])
+        if target.name != MANIFEST_NAME:
+            return False
+        old = _owned_manifest(target.read_text(encoding='utf-8-sig'))
+        new = _owned_manifest(plan['content'])
+        return old is not None and new is not None and _matching_blender_loader(old, new, addon_root)
+    except (OSError, ValueError, KeyError, TypeError, UnicodeError):
+        return False
+
+
 def repoint_registration(plan, expected_content, backup_directory, addon_root):
     """Repoint only the expected owned manifest using rename/check/exclusive publish."""
     root = _safe_directory(addon_root)
@@ -749,6 +789,8 @@ def repoint_registration(plan, expected_content, backup_directory, addon_root):
     for is_old, assembly in ((True, old_assembly), (False, new_assembly)):
         checked = _reject_links(assembly)
         if not checked.is_relative_to(runtime):
+            if is_old and _matching_blender_loader(checked, new_assembly, root):
+                continue
             raise UpdateError('Сборка регистрации должна находиться внутри runtime установленного дополнения')
         if checked.is_file():
             continue

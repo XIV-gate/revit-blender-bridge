@@ -569,6 +569,67 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(list(backup.iterdir()), [])
         self.assertEqual(updates.connect_registration(new, root, backup), target)
 
+    def blender_registration(self):
+        base = self.root / 'Blender'
+        old_root = base / '5.2/scripts/addons/xivgate_revit_bridge'
+        root = base / '5.3/scripts/addons/xivgate_revit_bridge'
+        relative = 'runtime/revit/2027/loader/1/XIVgate.RevitBridge.Loader.dll'
+        for parent in (old_root, root):
+            dll = parent / relative
+            dll.parent.mkdir(parents=True)
+            dll.write_bytes(b'frozen loader')
+        backup = self.root / 'migration-backup'
+        backup.mkdir()
+        old = manifest_plan('', str(old_root / relative), appdata_root=self.root)
+        new = manifest_plan('', str(root / relative), appdata_root=self.root)
+        target = Path(old['path'])
+        target.parent.mkdir(parents=True)
+        target.write_text(old['content'])
+        return root, backup, old, new, old_root / relative
+
+    def test_connect_migrates_identical_loader_from_previous_blender(self):
+        root, backup, old, new, dll = self.blender_registration()
+        target = Path(old['path'])
+        self.assertTrue(updates.can_migrate_blender_registration(new, root))
+        self.assertEqual(updates.connect_registration(new, root, backup), target)
+        self.assertFalse(updates.can_migrate_blender_registration(new, root))
+        self.assertEqual(target.read_text(), new['content'])
+        self.assertEqual(dll.read_bytes(), b'frozen loader')
+        self.assertEqual(list(backup.iterdir()), [])
+        self.assertEqual(updates.connect_registration(new, root, backup), target)
+
+    def test_blender_migration_rollback_and_switch_back(self):
+        root, backup, old, new, dll = self.blender_registration()
+        target = Path(old['path'])
+        transaction = updates.repoint_registration(new, old['content'], backup, root)
+        transaction.rollback()
+        self.assertEqual(target.read_text(), old['content'])
+        updates.connect_registration(new, root, backup)
+        old_root = dll.parents[5]
+        self.assertTrue(updates.can_migrate_blender_registration(old, old_root))
+        updates.connect_registration(old, old_root, backup)
+        self.assertEqual(target.read_text(), old['content'])
+
+    def test_blender_migration_refuses_changed_missing_or_noncanonical_loader(self):
+        root, backup, old, new, dll = self.blender_registration()
+        target = Path(old['path'])
+        dll.write_bytes(b'different')
+        with self.assertRaises(updates.UpdateError):
+            updates.connect_registration(new, root, backup)
+        self.assertEqual(target.read_text(), old['content'])
+        dll.unlink()
+        with self.assertRaises(updates.UpdateError):
+            updates.connect_registration(new, root, backup)
+        self.assertEqual(target.read_text(), old['content'])
+        outside = self.root / 'unrelated' / dll.name
+        outside.parent.mkdir()
+        outside.write_bytes(b'frozen loader')
+        external = manifest_plan('', str(outside), appdata_root=self.root)
+        target.write_text(external['content'])
+        with self.assertRaises(updates.UpdateError):
+            updates.connect_registration(new, root, backup)
+        self.assertEqual(target.read_text(), external['content'])
+
     def test_connect_registration_refuses_foreign_or_external_old_pointer(self):
         root, backup, old, new = self.registration()
         target = Path(old['path'])

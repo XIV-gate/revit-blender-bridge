@@ -691,7 +691,10 @@ class RBB_OT_scan(bpy.types.Operator):
         try:
             self.cache = str(workflow.prepare_settings(context.scene))
             self.plan = runtime.setup_plan(context.scene.xivgate_revit_bridge)
-            if not runtime.manifest_matches(self.plan) or not Path(self.cache).is_dir():
+            from .core.updates import can_migrate_blender_registration
+            needs_setup = (not runtime.manifest_matches(self.plan)
+                           and not can_migrate_blender_registration(self.plan, Path(__file__).resolve().parent))
+            if needs_setup or not Path(self.cache).is_dir():
                 return context.window_manager.invoke_props_dialog(self, width=680)
             return self.execute(context)
         except Exception as error:
