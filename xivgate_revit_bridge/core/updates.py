@@ -761,6 +761,15 @@ def _matching_blender_loader(old_assembly, new_assembly, addon_root):
             and source_sha256(old) == source_sha256(new))
 
 
+def _shared_transition(old, new, root):
+    from .bridge_store import verified_shared_entry, store_root
+    if not verified_shared_entry(new, root): return False
+    if verified_shared_entry(old, root): return True
+    if old.is_relative_to(root / 'runtime') and old.is_file(): return True
+    relative = new.relative_to(store_root())
+    return _matching_blender_loader(old, root / relative, root)
+
+
 def can_migrate_blender_registration(plan, addon_root):
     """Read-only eligibility check for the ordinary scan's automatic reconnect."""
     try:
@@ -769,12 +778,13 @@ def can_migrate_blender_registration(plan, addon_root):
             return False
         old = _owned_manifest(target.read_text(encoding='utf-8-sig'))
         new = _owned_manifest(plan['content'])
-        return old is not None and new is not None and _matching_blender_loader(old, new, addon_root)
+        return old is not None and new is not None and (_matching_blender_loader(old, new, addon_root)
+                or _shared_transition(old, new, Path(addon_root)))
     except (OSError, ValueError, KeyError, TypeError, UnicodeError):
         return False
 
 
-def repoint_registration(plan, expected_content, backup_directory, addon_root):
+def repoint_registration(plan, expected_content, backup_directory, addon_root, *, prior_shared_entry=None):
     """Repoint only the expected owned manifest using rename/check/exclusive publish."""
     root = _safe_directory(addon_root)
     backup = _safe_directory(backup_directory)
@@ -789,7 +799,17 @@ def repoint_registration(plan, expected_content, backup_directory, addon_root):
     for is_old, assembly in ((True, old_assembly), (False, new_assembly)):
         checked = _reject_links(assembly)
         if not checked.is_relative_to(runtime):
-            if is_old and _matching_blender_loader(checked, new_assembly, root):
+            from .bridge_store import verified_shared_entry
+            if verified_shared_entry(checked, root):
+                continue
+            if (is_old and isinstance(prior_shared_entry, tuple) and len(prior_shared_entry) == 2
+                    and str(checked) == prior_shared_entry[0]
+                    and isinstance(prior_shared_entry[1], str) and _SHA256.fullmatch(prior_shared_entry[1])
+                    and checked.is_file()
+                    and hashlib.sha256(checked.read_bytes()).hexdigest() == prior_shared_entry[1]):
+                continue
+            if is_old and (_matching_blender_loader(checked, new_assembly, root)
+                           or _shared_transition(checked, new_assembly, root)):
                 continue
             raise UpdateError('Сборка регистрации должна находиться внутри runtime установленного дополнения')
         if checked.is_file():
@@ -852,7 +872,9 @@ def connect_registration(plan, addon_root, backup_directory):
         if assembly is None:
             raise UpdateError('Новый манифест не принадлежит этому дополнению')
         assembly = _reject_links(assembly)
-        if not assembly.is_relative_to(_target(root, 'runtime')) or not assembly.is_file():
+        from .bridge_store import verified_shared_entry
+        if ((not assembly.is_relative_to(_target(root, 'runtime'))
+             and not verified_shared_entry(assembly, root)) or not assembly.is_file()):
             raise UpdateError('Новая сборка должна находиться внутри runtime установленного дополнения')
         if not target.exists() or manifest_matches(plan):
             return install_manifest(plan)

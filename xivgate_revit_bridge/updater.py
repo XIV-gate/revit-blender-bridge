@@ -253,6 +253,7 @@ def _perform_install():
     root = Path(__file__).resolve().parent
     state, old_version = STATE, current_version()
     package_transaction = registration_transaction = None
+    from .core import bridge_store  # Keep migration code available during rollback to an older package.
     try:
         _set('INSTALLING', 'Установка проверенного обновления…')
         props = state.scene.xivgate_revit_bridge
@@ -268,17 +269,20 @@ def _perform_install():
         plan = manifest_plan(bpy.path.abspath(props.revit_exe), root / workers[key], year=year, **kwargs)
         registration_path = Path(plan['path'])
         prior_registration = registration_path.read_text(encoding='utf-8-sig') if registration_path.exists() else None
+        prior_shared_entry = bridge_store.capture_shared_registration(prior_registration, root) if prior_registration else None
         package_transaction = updates.install_package(state.package, root, state.work)
         # New releases retain their frozen entry point across worker versions.
         # Old packages remain eligible for rollback to direct worker registration.
         if 'core/loader_payload.py' in state.package.files:
             from .core.loader import ensure_loader
             entry = ensure_loader(root, key)
+            if 'core/bridge_store.py' in state.package.files:
+                entry = bridge_store.ensure_shared_runtime(root, key)
             if entry is None:
                 raise RuntimeError('В комплекте отсутствует постоянный загрузчик')
             plan = manifest_plan(bpy.path.abspath(props.revit_exe), entry, year=year, **kwargs)
         if prior_registration is not None and not manifest_matches(plan):
-            registration_transaction = updates.repoint_registration(plan, prior_registration, state.work, root)
+            registration_transaction = updates.repoint_registration(plan, prior_registration, state.work, root, prior_shared_entry=prior_shared_entry)
         _set('RELOADING', 'Перезагрузка AGR Revit Bridge…')
         _safe_unregister(module)
         _purge_children(package_name, root)

@@ -64,6 +64,62 @@ def show_main_window(pid):
             user32.ShowWindow(popup, 9 if user32.IsIconic(popup) else 5)
 
 
+def is_our_trust_dialog(title, texts):
+    caption = title.casefold()
+    content = ' '.join(texts).casefold()
+    return (any(word in caption for word in ('security', 'безопасность'))
+            and 'xivgate.revitbridge.loader.dll' in content
+            and ('xivgate' in content))
+
+
+def pending_trust_dialog(pid):
+    """Inspect titles/static controls only; never click, focus or grant trust."""
+    if os.name != 'nt' or not pid: return False
+    import ctypes
+    from ctypes import wintypes
+    user = ctypes.WinDLL('user32', use_last_error=True)
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user.EnumWindows.argtypes = [callback_type, wintypes.LPARAM]
+    user.EnumChildWindows.argtypes = [wintypes.HWND, callback_type, wintypes.LPARAM]
+    user.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user.SendMessageTimeoutW.argtypes = [wintypes.HWND, wintypes.UINT, ctypes.c_size_t, ctypes.c_void_p, wintypes.UINT, wintypes.UINT, ctypes.POINTER(ctypes.c_size_t)]
+    user.SendMessageTimeoutW.restype = ctypes.c_ssize_t
+    import time
+    deadline = time.monotonic() + .15
+    found = []
+    def text(hwnd):
+        buffer = ctypes.create_unicode_buffer(4096)
+        user.GetWindowTextW(hwnd, buffer, len(buffer))
+        return buffer.value
+    def visit(hwnd, _):
+        if time.monotonic() >= deadline: return False
+        owner = wintypes.DWORD()
+        user.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if owner.value != pid: return True
+        title = text(hwnd)
+        if not any(word in title.casefold() for word in ('security', 'безопасность')): return True
+        controls = []
+        def child(handle, _):
+            if time.monotonic() >= deadline: return False
+            child_pid = wintypes.DWORD()
+            user.GetWindowThreadProcessId(handle, ctypes.byref(child_pid))
+            if child_pid.value == pid:
+                buffer = ctypes.create_unicode_buffer(4096)
+                result = ctypes.c_size_t()
+                if user.SendMessageTimeoutW(handle, 0x000D, len(buffer), ctypes.cast(buffer, ctypes.c_void_p), 0x2, 25, ctypes.byref(result)):
+                    controls.append(buffer.value)
+            if len(controls) >= 32: return False
+            return True
+        child_callback = callback_type(child)
+        user.EnumChildWindows(hwnd, child_callback, 0)
+        if is_our_trust_dialog(title, controls): found.append(True)
+        return True
+    callback = callback_type(visit)
+    user.EnumWindows(callback, 0)
+    return bool(found)
+
+
 class WorkerProcess:
     def __init__(self):
         self._process = None

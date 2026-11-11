@@ -58,3 +58,14 @@ class WorkerWindowsTests(unittest.TestCase):
         with patch('ctypes.WinDLL', return_value=api):
             show_main_window(7)
         self.assertEqual([call.args for call in api.ShowWindow.call_args_list], [(1, 5), (4, 5)])
+
+
+class TrustDialogTests(unittest.TestCase):
+    def test_trust_detector_requires_our_loader_and_security_dialog(self):
+        from xivgate_revit_bridge.core.launcher import is_our_trust_dialog
+        self.assertTrue(is_our_trust_dialog('Безопасность — Надстройка без подписи',
+            ['XIVgate Revit Blender Bridge', 'XIVgate.RevitBridge.Loader.dll']))
+        self.assertTrue(is_our_trust_dialog('Security - Unsigned Add-In',
+            ['XIVgate Revit Blender Bridge', 'XIVgate.RevitBridge.Loader.dll']))
+        self.assertFalse(is_our_trust_dialog('Security - Unsigned Add-In', ['AnotherVendor.dll']))
+        self.assertFalse(is_our_trust_dialog('Autodesk Revit', ['XIVgate.RevitBridge.Loader.dll']))

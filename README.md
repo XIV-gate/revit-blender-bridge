@@ -3,9 +3,9 @@
 **Стабильная версия: 0.5.0.** Нативные варианты геометрии Revit, настраиваемый
 допуск инстансов и постоянный загрузчик включены в обычный установочный ZIP.
 [Описание 0.5.0](docs/RELEASE_NOTES_0_5_0.md).
-Ранний доступ **0.5.8** исправляет автоматический перенос подключения Revit
-между версиями Blender и сохраняет все возможности 0.5.7.
-[Описание 0.5.8](docs/RELEASE_NOTES_0_5_8.md).
+Ранний доступ **0.5.9** добавляет постоянное расположение загрузчика вне папок
+Blender и явное уведомление об ожидании подтверждения доверия в Revit.
+[Описание 0.5.9](docs/RELEASE_NOTES_0_5_9.md).
 
 Аддон Blender для локального импорта моделей Revit с выбором нужных элементов.
 Можно перенести фасад, окна и наружные детали, исключить лишнее, сохранить
@@ -20,7 +20,7 @@
 
 **[Скачать последнюю стабильную версию](https://github.com/XIV-gate/revit-blender-bridge/releases/latest)**
 · [Стабильная 0.5.0](https://github.com/XIV-gate/revit-blender-bridge/releases/tag/v0.5.0)
-· [Ранний доступ 0.5.8](https://github.com/XIV-gate/revit-blender-bridge/releases/tag/v0.5.8)
+· [Ранний доступ 0.5.9](https://github.com/XIV-gate/revit-blender-bridge/releases/tag/v0.5.9)
 · [Все версии](https://github.com/XIV-gate/revit-blender-bridge/releases)
 · [Инструкция](docs/USER_GUIDE_RU.md)
 · [Решение проблем](docs/TROUBLESHOOTING_RU.md)

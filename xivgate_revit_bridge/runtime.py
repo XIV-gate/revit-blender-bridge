@@ -44,7 +44,10 @@ def setup_plan(props):
     from .core.loader import ensure_loader
     info = inspect_revit(bpy.path.abspath(props.revit_exe))
     kwargs = registration_options(props, info['year'])
-    entry = ensure_loader(Path(__file__).resolve().parent, info['key']) or worker_path(props)
+    from .core.bridge_store import ensure_shared_runtime
+    addon = Path(__file__).resolve().parent
+    local_entry = ensure_loader(addon, info['key'])
+    entry = ensure_shared_runtime(addon, info['key']) if local_entry else worker_path(props)
     return manifest_plan(info['path'], entry, year=info['year'], **kwargs)
 
 
@@ -63,7 +66,8 @@ def connection_info(props):
         entry = worker
         if raw is not None:
             relative, _, digest = payload_record(raw, info['key'])
-            entry = addon / relative
+            from .core.bridge_store import shared_entry
+            entry = shared_entry(addon, info['key']) or (addon / relative)
             if entry.is_file() and source_sha256(entry) != digest:
                 return {**info, 'connected': False, 'available': True,
                         'message': 'Загрузчик отличается от комплекта; требуется проверка установки'}
@@ -353,8 +357,10 @@ def begin_scan(scene, *, auto_import=False):
     if not worker_path(props).is_file():
         raise FileNotFoundError('В комплекте отсутствует обработчик Revit ' + info['key'])
     from .core.loader import launch_environment
+    from .core.bridge_store import ensure_shared_runtime
     from . import bl_info
     worker_environment = launch_environment(Path(__file__).resolve().parent, info['key'], '.'.join(map(str, bl_info['version'])))
+    ensure_shared_runtime(Path(__file__).resolve().parent, info['key'])
     plan = setup_plan(props)
     if not Path(plan['path']).is_file():
         raise RuntimeError('Сначала нажмите «Подключить Revit» в этой панели')
@@ -394,6 +400,8 @@ def begin_scan(scene, *, auto_import=False):
     STATE.request_id = request['request_id']
     STATE.action = 'scan'
     STATE.started = time.monotonic()
+    STATE.trust_pending = False
+    STATE.last_trust_check = 0
     props.job_directory = str(STATE.session.directory)
     _message('STARTING', 'Запуск локального Revit и чтение рабочей копии…', busy=True, progress=0)
     if STATE.worker.pid is None or STATE.worker.poll() is not None:
@@ -786,6 +794,14 @@ def tick():
                 reason = stream.read(4096).splitlines()
             STATE.worker.terminate()
             raise RuntimeError('Ошибка загрузчика Revit: ' + (reason[0] if reason else 'см. loader_error.txt'))
+        from .core.launcher import pending_trust_dialog
+        now = time.monotonic()
+        if now - getattr(STATE, 'last_trust_check', 0) >= 2:
+            STATE.last_trust_check = now
+            STATE.trust_pending = pending_trust_dialog(STATE.worker.pid)
+        if getattr(STATE, 'trust_pending', False):
+            _message('REQUIRES_ACTION', 'Revit ждёт разрешения загрузить AGR. Нажмите «Показать Revit» и выберите «Всегда загружать». До подтверждения импорт не начнётся.', busy=True, timing_stage='trust_confirmation')
+            return .25
         status = STATE.session.read_status()
         if status:
             name = str(status.get('state', '')).upper()
@@ -795,7 +811,7 @@ def tick():
             _message(allowed.get(name, STATE.props.status), str(status.get('message', 'Обработка модели…')),
                      busy=True, progress=status.get('progress', STATE.props.progress), timing_stage=name.lower() or 'worker')
         elif time.monotonic() - STATE.started > 45:
-            _message('STARTING', 'Revit запускается. Если появилось его окно с вопросом, используйте «Показать Revit».', busy=True)
+            _message('STARTING', 'Revit запускается. Если появилось окно доверия к XIVgate, нажмите «Показать Revit» и выберите «Всегда загружать». До подтверждения импорт не начнётся.', busy=True)
         if STATE.worker.poll() is not None:
             raise RuntimeError('Процесс Revit завершился до получения ответа. Журнал: ' + str(STATE.session.directory))
         return 0.25

@@ -23,7 +23,7 @@ def main():
     env = os.environ.copy()
     for variable, folder in (('BLENDER_USER_CONFIG', 'config'), ('BLENDER_USER_SCRIPTS', 'scripts'),
                              ('BLENDER_USER_DATAFILES', 'datafiles'), ('BLENDER_USER_EXTENSIONS', 'extensions'),
-                             ('TEMP', 'temp'), ('TMP', 'temp')):
+                             ('TEMP', 'temp'), ('TMP', 'temp'), ('LOCALAPPDATA', 'local')):
         path = profile / folder
         path.mkdir(parents=True, exist_ok=True)
         env[variable] = str(path)

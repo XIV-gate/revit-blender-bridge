@@ -42,6 +42,79 @@ class LoaderTests(unittest.TestCase):
             loader_payloads={'abi': 1, 'sha256': {k: v['sha256'] for k, v in self.payload['loaders'].items()}})))
         return path
 
+    def test_shared_loader_survives_package_location_and_version_changes(self):
+        from xivgate_revit_bridge.core.bridge_store import ensure_shared_runtime
+        self.write_payload()
+        self.worker('0.4.8')
+        store = self.root / 'permanent'
+        with patch('xivgate_revit_bridge.core.bridge_store.store_root', return_value=store):
+            first = ensure_shared_runtime(self.root, '2027')
+            stamp = first.stat().st_mtime_ns
+            self.worker('0.4.9')
+            self.assertEqual(ensure_shared_runtime(self.root, '2027'), first)
+            self.assertEqual(first.stat().st_mtime_ns, stamp)
+            other = self.root / 'other-package'
+            import shutil
+            shutil.copytree(self.root / 'core', other / 'core')
+            shutil.copy2(self.root / 'PACKAGE_MANIFEST.json', other / 'PACKAGE_MANIFEST.json')
+            shutil.copytree(self.root / 'runtime', other / 'runtime')
+            self.assertEqual(ensure_shared_runtime(other, '2027'), first)
+            self.assertEqual(first.stat().st_mtime_ns, stamp)
+            self.assertTrue((store / 'runtime/revit/2027/0.4.8/XIVgate.RevitBridge.Worker.dll').is_file())
+            self.assertTrue((store / 'runtime/revit/2027/0.4.9/XIVgate.RevitBridge.Worker.dll').is_file())
+            first.write_bytes(b'changed')
+            with self.assertRaises(ValueError): ensure_shared_runtime(other, '2027')
+            self.assertEqual(first.read_bytes(), b'changed')
+
+    def test_shared_registration_is_verified_and_migrates_transactionally(self):
+        from xivgate_revit_bridge.core.bridge_store import ensure_shared_runtime, verified_shared_entry
+        from xivgate_revit_bridge.core.updates import connect_registration, can_migrate_blender_registration
+        self.write_payload()
+        self.worker('0.4.8')
+        local = ensure_loader(self.root, '2027')
+        store = self.root / 'persistent'
+        backup = self.root / 'backups'
+        backup.mkdir()
+        with patch('xivgate_revit_bridge.core.bridge_store.store_root', return_value=store):
+            shared = ensure_shared_runtime(self.root, '2027')
+            self.assertTrue(verified_shared_entry(shared, self.root))
+            old = manifest_plan('', local, appdata_root=self.root / 'profile')
+            plan = manifest_plan('', shared, appdata_root=self.root / 'profile')
+            install_manifest(old)
+            self.assertTrue(can_migrate_blender_registration(plan, self.root))
+            connect_registration(plan, self.root, backup)
+            self.assertTrue(manifest_matches(plan))
+            stamp = Path(plan['path']).stat().st_mtime_ns
+            connect_registration(plan, self.root, backup)
+            self.assertEqual(Path(plan['path']).stat().st_mtime_ns, stamp)
+            self.assertFalse(verified_shared_entry(local, self.root))
+            shared.write_bytes(b'changed')
+            self.assertFalse(verified_shared_entry(shared, self.root))
+
+    def test_downgrade_keeps_prevalidated_shared_identity_after_payload_removal(self):
+        from xivgate_revit_bridge.core.bridge_store import ensure_shared_runtime, capture_shared_registration
+        from xivgate_revit_bridge.core.updates import repoint_registration, UpdateError
+        self.write_payload()
+        worker = self.worker('0.4.8')
+        backup = self.root / 'backup'
+        backup.mkdir()
+        with patch('xivgate_revit_bridge.core.bridge_store.store_root', return_value=self.root / 'persistent'):
+            shared = ensure_shared_runtime(self.root, '2027')
+            old = manifest_plan('', shared, appdata_root=self.root / 'profile')
+            install_manifest(old)
+            snapshot = capture_shared_registration(old['content'], self.root)
+            self.assertIsNotNone(snapshot)
+            (self.root / 'core/loader_payload.py').unlink()
+            (self.root / 'PACKAGE_MANIFEST.json').unlink()
+            direct = manifest_plan('', worker, appdata_root=self.root / 'profile')
+            with self.assertRaises(UpdateError):
+                repoint_registration(direct, old['content'], backup, self.root)
+            transaction = repoint_registration(direct, old['content'], backup, self.root, prior_shared_entry=snapshot)
+            transaction.rollback()
+            shared.write_bytes(b'changed')
+            with self.assertRaises(UpdateError):
+                repoint_registration(direct, old['content'], backup, self.root, prior_shared_entry=snapshot)
+
     def test_old_packages_have_no_loader_side_effects(self):
         self.assertIsNone(ensure_loader(self.root, '2027'))
         self.assertEqual(launch_environment(self.root, '2027', '0.4.7'), {})

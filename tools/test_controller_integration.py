@@ -111,6 +111,13 @@ with patch.object(runtime, 'WorkerProcess', TestWorker), patch.object(runtime, '
         patch.object(runtime, 'setup_plan', return_value=dict(path=str(pointer), content='test-only')), \
         patch.object(runtime, 'manifest_matches', return_value=True):
     runtime.begin_scan(scene)
+    with patch.object(runtime.STATE.session, 'read_response', return_value=None), \
+            patch('xivgate_revit_bridge.core.launcher.pending_trust_dialog', return_value=True):
+        runtime.STATE.last_trust_check = 0
+        runtime.tick()
+        assert props.status == 'REQUIRES_ACTION' and 'Всегда загружать' in props.message
+        assert props.busy and runtime.STATE.action == 'scan'
+    runtime.STATE.last_trust_check = 0
     wait_ready()
     assert props.selected_count == 3 and props.status == 'READY'
     props.reuse_export_cache = False
